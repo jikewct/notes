@@ -9,6 +9,7 @@
 - suffix rule 
     已经由pattern rule代替,但仍然兼容.
     分为两种：single suffix rule(e.g. .c) & double suffix rule(e.g. .c.o)
+    .c .o在默认的suffixes中，.SUFFIXES : .c .o .xo .so 指明.xo .so等suffix
     举例如下:
     .c.o:
         $(CC) -c $(CFLAGS) -o $@ $<
