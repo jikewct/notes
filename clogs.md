@@ -174,3 +174,128 @@ linux/aio_abi.h typedef _kernel_ulong_t aio_context_t
 综上所述：使用libaio的话需要参考源代码文件夹下的man文档
 man文档的转换方法为 nroff -man io_submit.1 | less -r
 
+
+
+
+-------------------
+Thu Apr 27 13:40:34 CST 2017
+关于配置的思考
+
+因为服务端和客户端都需要考虑配置文件动态生效功能，所以配置中心不可少
+
+配置中心的功能
+1. 发现服务
+2. 注册服务？
+3. 统一管理
+4. 配置变更
+5. moved to
+
+
+
+配置中心：
+1. 每个子系统一套统一的配置文件
+2.通过 reload sub_sys client 命令更新配置
+3.不备份/双活（服务停止后客户端服务端无法更新配置, 重新拉起即可）
+4.client 配置文件由基本配置 拼接 svrs 构成
+5.svr启动之后向配置中心注册服务(心跳报文）
+
+
+客户端:
+    get version sub_sys + client;
+    get config sub_sys + client; //配置文件作为最小粒度!
+
+    生效: 直接修改hdl
+
+服务端：
+    get version sub_sys + server;
+    get config  sub_sys + server;
+    post status sub_sys + server;
+
+    生效：
+        重启？
+        stopflag -> 线程join -> respawn threads
+
+        spawn threads -> stopflag -> join -> switch context
+
+
+另一种高可用方案：
+    svr定期向配置中心发送心跳报文，配置中心对svrs的健康状态进行管理（一旦svrs状态变更，则更新客户端配置文件）
+    clt定期向配置中心获取配置文件version，如果version更新，则更新配置
+
+目前的高可用方案：
+    clt向svr发送探测报文，并且在其中做隔离与恢复。
+
+两种方案的对比：
+1. 由于多了配置中心，可以固定服务端口，收取心跳报文，可以将客户端的高可用转移到配置中心进行实现
+2. 配置中心的的高可用就不用考虑线程级别，进程级别，机器级别，可以直接坐到分布式的统一
+3. 配置中心可以在linux部署，不受限与AIX等跨平台要求
+
+4. 配置中心的复杂度更高，需要承受的tps更高（不过预估总量还是很少）
+
+
+总结：
+   无论如何实现，svr & clt 都先在配置文件的情况下调试通过（暂不考虑高可用）
+   首先要确定配置选项和配置文件
+   再读取配置文件
+   再配置文件reload
+   在高可用
+
+-------------------
+具体任务
+1. 示例svr配置文件 & clt配置文件
+2. svr 配置文件解析
+3. clt 配置文件解析
+4. 高可用讨论
+
+------------------
+关于clogs udp线程的理解：
+> 解析服务器描述字符串
+> 对每个listen：创建svr -> 创建线程-> 设置读事件 -> 开启线程
+
+
+问题
+1. 为啥udp不需要listen?
+udp 就是不需要listen, bind之后，就可以recv和recvfrom了。
+能不能read，应该是可以的
+
+不能只听一家之言，看看twemproxy怎么设计的, 
+
+    struct server {
+        uint32_t           idx;           /* server index */
+        struct server_pool *owner;        /* owner pool */
+
+        struct string      pname;         /* hostname:port:weight (ref in conf_server) */
+        struct string      name;          /* hostname:port or [name] (ref in conf_server) */
+        struct string      addrstr;       /* hostname (ref in conf_server) */
+        uint16_t           port;          /* port */
+        uint32_t           weight;        /* weight */
+        struct sockinfo    info;          /* server socket info */
+
+        uint32_t           ns_conn_q;     /* # server connection */
+        struct conn_tqh    s_conn_q;      /* server connection q */
+
+        int64_t            next_retry;    /* next retry time in usec */
+        uint32_t           failure_count; /* # consecutive failures */
+    };
+
+
+so,如何设计客户端的client
+1. parse 差不多，但是需要一个name，用于ketama，当机器ip更换了之后，可以通过名字找到服务器
+
+typdef struct clogs_one_svr {
+    uint32_t        idx;
+    clogs_hdl_t     *owner;
+    char            name[32];       /* hostname:port or [name] */
+    uint16_t        port;           /* port */
+    char            addrstr;        /* hostname */
+    uint32_t        weight;         /* weight */
+
+    struct sockaddr_in  sa;         /* sa from */
+} clogs_one_svr_t;
+
+typdef struct clogs_svr {
+    int          nsvr;
+    clogs_svr_t *svr;      /* array of clogs_svr_t */
+} clogs_svr_t;
+
+
