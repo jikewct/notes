@@ -75,4 +75,27 @@ const char *inet_ntop(int family, const void *addr, char *str, size_t len);//
 #define INET6_ADDRSTRLEN 46
 
 
+* 关于select poll epoll
 
+材料：
+https://daniel.haxx.se/docs/poll-vs-select.html(libcurl作者的比较）
+Comparing and Evaluating epoll, select, and poll Event Mechanisms(65, 2004 ols2004)
+http://stackoverflow.com/questions/4093185/whats-the-difference-between-epoll-poll-threadpool 199
+http://stackoverflow.com/questions/17355593/why-is-epoll-faster-than-select 58
+http://stackoverflow.com/questions/4039832/select-vs-poll-vs-epoll 32
+man page http://man7.org/linux/man-pages/man2/select.2.html
+apue
+unp
+
+库；
+libev，libevent, libuv
+
+应用：
+twemproxy
+redis
+memcached
+libcurl
+axel
+
+* 抓包
+tcpdump

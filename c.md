@@ -21,3 +21,5 @@ buf[strcspn(buf, '\n')] = 0;
 * strpbrk - search a string for any of a set of bytes
 
 * goto label, label only have function scope
+
+* restrict c99 keyword, intend for compiler, its' programmer promise of elimiating pointer aliasing

@@ -235,4 +235,38 @@ so. u_clog_init(const char *ini)
     一个hdl下面只是有一大堆可用的svr，svr没有绑定到固定的sys_id, hdl也没有绑定到固定的sys_id
 
 
+-----------------------
+Wed May  3 16:01:56 CST 2017
+
+UPEL
+1. coreutils的深入调研
+1.1 textutils 测试总结
+举例说明coreutils能完成的功能：？？？
+
+1.2 sh-utils 测试总结
+
+举例说明sh-utils能完成的功能: ? ? ?
+
+1.3 fileutils 测试总结
+
+2. coreutils分享材料准备
+
+预期分享的形式？
+
+大类 > 单个命令介绍
+
+几个问题：
+为啥这些exe被组合到一起
+组合起来？
+
+
+1. 先完成工具的测试
+2. 写一个wiki(中心点？以上tool为什么组合到一起，组合起来能做些什么事情？）
+为什么不能sudo cd 之类的？
+如何能组合起来?
+看样子如果2做不起来就直接做掉1吧
+anyway 
+start with 1
+
+
 

@@ -299,3 +299,90 @@ typdef struct clogs_svr {
 } clogs_svr_t;
 
 
+----------------------------
+评估当前的load-balance机制
+1. 负载均衡的粒度到底应该是哪个？消息？文件？
+2. 思考满足 指定 + hash 的方案
+3. review load-balance 实现
+
+思考高可用和配置中心的实现
+1. 
+
+
+-------------
+看看网络编程的书！
+浏览发现unix的书可能还不如man-page和谷歌来得快，系统性的话，也不一定有seealso之类的来的好！
+abandon
+
+-------------
+clogs的高可用策略
+如果按照luqiang策略实现：
+>>>>>>>
+clt:
+
+/* try recover & islate */
+if now > last_ping + T
+    pong_id = recv
+    if (pong_id == ping_id + 1) //valid ack
+        if svr down 
+            up svr
+            update continuum
+            NACK = 0
+    else    //not valid ack (EWOULD_BLOCK, pong_id < ping_id)
+        NACK++
+        if NACK > X && svr up
+            down svr
+            update continum
+
+    ping_id += 2
+    ping(ping_idd)
+
+send msg
+
+<<<<<<<<<
+svr: 
+
+while(1):
+    recv msg
+    if msg is ping:
+        send ping++;
+    else
+        rep & save
+
+----------------
+clogs的配置中心策略
+
+if now > last_cfg_check + T //超时重传
+    send get cfg version
+    state = getting_cfg_version
+    last_cfg_check = now
+
+switch state:
+
+init:
+    pass
+
+getting_cfg_version:
+    DRAIN cfg version
+
+    if (version > hdl.version)
+        send get cfg
+        state = getting_cfg
+    else if (version == hdl.version)
+        state = init
+    else if (version < hdl.version)
+        //delayed version ack
+    else //error
+        pass
+
+getting_cfg:
+    recv cfg
+
+    if cfg valid:
+        reload cfg
+        state = init
+    else //error 
+        pass
+
+default:
+    pass
