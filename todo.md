@@ -1,3 +1,7 @@
+1. 研究axel的断点续传工作原理
+2. 搞清楚为什么axel要通过select + 多线程来实现多连接下载
+3. 判断是否有必要写一个通过epoll来进行多链接下载器
+
 ---------
 clogs
 - 1. 解决pipe，diff, terminal问题: 通过isatty能判断当前的stdin是否为tty，这样就可以对tty和非tty有不同的读取方法，但这个已经被linenoise做掉了
@@ -269,6 +273,5 @@ anyway
 start with 1
 
 
-----------------------
 1. tagbar
 2. opt dotfiles/setup.sh

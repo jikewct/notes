@@ -1,3 +1,12 @@
+* locale  
+
+    #include <locale.h>
+    char *setlocale(int category, const char *locale)
+    locale == "", set according to ENV
+    locale == NULL, query current
+
+    setlocale(LC_ALL, ""); //program made portable
+
 # apue
 
 * pipe(int fd[2])  fd0, fd1分别是pipe的读写端。
