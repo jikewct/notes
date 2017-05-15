@@ -269,4 +269,6 @@ anyway
 start with 1
 
 
-
+----------------------
+1. tagbar
+2. opt dotfiles/setup.sh
