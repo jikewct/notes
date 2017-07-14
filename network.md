@@ -97,5 +97,45 @@ memcached
 libcurl
 axel
 
-* 抓包
-tcpdump
+
+
+* 抓包 tcpdump tcpdump -i eno1 -XX host 172.20.51.159
+
+* 发送
+
+* nc
+
+* 非阻塞 connect， close， shutdown， accept
+connect: 立即返回EINPROGRESS，三步握手继续进行；值得注意的是如果是在C/S在同一个机器，那么通常立即返回，而不是EINPROGRES。
+
+tools
+http://stackoverflow.com/questions/4777042/can-i-use-tcpdump-to-get-http-requests-response-header-and-response-body
+wireshark for capturing http request
+tcp [like wireshark but command line]
+http debug proxy charles and fiddler
+firebug let you see the parsed request
+telnet netcat socat connect directly to 80, and mannualy construct request
+htty help construct a request and inspect the response
+
+关于链路状态的保持：
+- 链路出错了怎么办？链路随时出错怎么办？
+- EINTER? EINPROGRESS? EPOLLERR? EPOLLHUP?
+- connect, close, accept与非阻塞
+- twemproxy如何做到auto-eject？（也就是服务端自动隔离）
+
+
+twemproxy的链路操作总结：
+1. EPOLLERR, : 
+   epoll删除fd资源
+   对于proxy，直接close
+   对于server, 直接close并且释放相应的msg资源；但是并不会立即剔除svr；下次再来请求还是会
+               进行connect
+   对于client, 直接清除资源，close
+
+2. server_connect: 
+    socket
+    set_nonblock
+    event_addcon
+    connect（一般这个时候，都是EINPROGRESS）
+    成功之后，epoll, select, poll会有写事件！(make sense)
+

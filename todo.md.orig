@@ -272,39 +272,10 @@ UPEL
 anyway 
 start with 1
 
+<<<<<<< HEAD
 
+----------------------
 1. tagbar
 2. opt dotfiles/setup.sh
-
-
------------
-关于网络环境模拟器
-
-最主要是用来模拟网络环境的延迟，带宽低，网络抖动，网络故障等问题。
-
-类似的产品：
-clumsy：https://jagt.github.io/clumsy/
-netem:http://stackoverflow.com/questions/1094760/network-tools-that-simulate-slow-network-connection
-fiddler:
-dummynet:http://info.iet.unipi.it/~luigi/dummynet/
-comcast:https://github.com/tylertreat/comcast
-
------------
-重构cfg_server
-1. 润色 make it work
-
-
-------------
-
-业界如何做日志归集？
-可不可以向hdfs中写文件？
-如何知道当前文件在那个服务器？
-
-配置中心的一致性问题
-配置中心reload问题！
-
-
-------------------
-1. appconof的md5
-2. appconf reload （kill -1 实现，nohup？）
-
+=======
+>>>>>>> ad1019ebd2d73cfd423cd322675302bd5d464bcb

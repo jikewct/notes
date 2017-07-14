@@ -671,3 +671,267 @@ clogs-bench -c <conf> [-x <hdl>] [-f <nfile>] [-t <msg_type>] [-d <msg_len>] [-z
 3. 测试工具
    clogs-cli batch-mode, interactive-mode, 性能测试
    clogs-bench bench工具(模拟多客户端）
+
+-----------
+联调配置中心和配置文件动态生效
+
+配置中心的ip,port先放在hdl_init参数中解析，最后可能会放到共享内存
+
+
+hdl_init
+hdl_reload //如果hdl要支持回滚，可以考虑hdl {ohdl, nhdl}
+get_cfg_block();
+
+blen == 0 ??
+
+---------------
+配置文件动态生效：
+clog_svr: 
+对于svr的变更包括增删改
+
+创建+替换：变更瞬间消耗更多的fd，ha状态被重置，但是逻辑更简单易懂;
+
+对比+按需（增加，删除，修改）：变更消耗fd数量减少，ha状态保持，逻辑复杂难把控;
+
+暂时按照创建+替换策略进行。
+
+
+--------------
+方案评审结果
+
+1. 配置中心配置文件指定那些位置是用来hash的（比如说用机构名称作为哈希key，那么
+同一家机构的文件会被hash到同一个位置
+
+2. recv时间可以适当优化（比如发送之后才进行接收，间隔多长时间才进行接收，以降低频次）
+
+-----------
+1. 增加md5&version变化功能
+2. 基本功能测试
+4. 系统测试框架
+
+1. 单笔发送
+2. tps 1 发送
+3. tps 1000 发送
+
+-----------
+A) 测试
+1. 功能测试
+2. 性能测试
+3. 单元测试
+4. 系统测试
+
+B) 优化
+1. clogs_info 非定长
+2. \r\n
+3. 类似于hashtag功能的设计与开发
+4. 优化recv次数，确定技术参数
+
+C）脱敏插件
+1. 8583
+2. fml
+3. xml
+4. tlv
+
+------------------------
+开发8583脱敏插件
+
+两种方案:
+
+1. hardcode 
+
+由于8583的报文规范是统一的，所以每一个域对应的解析方法和脱敏方法都是已知且固定，
+因此可以hardcode, 也不用配置脱敏规则。
+
+1.1 实现
+
+按照8583的报文规范进行编码
+
+1.2 分析
+
+1.2.1 优点
+
+- 实现简单
+- 无需配置
+
+1.2.2 缺点
+
+- 没有在8583中规定的域无法处理
+- 如果8583的规范更新，clogs需要相应更新
+
+
+2. 配置
+
+由于8583报文规范会更新，但是使用的数据描述方法基本不变（定长数据，变长数据，TLV等）
+因此可以通过配置8583的解析和脱敏规则来应对不同的8583报文规范和不同的脱敏需求。
+
+2.1 实现
+
+2.1.1 脱敏
+
+配置：
+
+14,35,36,47.A1,52,55,61.1,61.4[4-6],61.6.AM[17-165],61.6.NM,63.SM
+
+数据结构：
+
+repconf { id : {range,to} }
+
+算法：
+
+解析时产生事件
+通过事件id找到{range,to}
+执行替换
+    
+2.1.2 解析
+
+将8583报文理解为树形结构，8583报文.[2-128域].用法.子域.用法...
+解析每一个层级都会产生一个事件，事件id为以上路径。
+
+
+配置：（暂时不配置，避免解析复杂配置文件；但是在代码中给出模板配置和默认配置）
+
+数据结构：
+
+struct field {
+    char *id;           /* 域id */
+    parse_t parse;      /* 解析本域的函数, n, var... */
+    child_t child;      /* 获取子域id的函数 */
+    u_hash_t childs;    /* 可选子域列表 {id : field} */
+}
+
+
+初始化:
+
+8583:
+    8583
+    parse_8583_hdr
+    incr
+    2 => <field>:
+        2
+        parse_var
+        NULL
+        NULL
+    3 => <field>:
+        3
+        parse_n
+        NULL
+        NULL
+    4 => <field>:
+        4
+        parse_n
+        NULL
+        NULL
+    ...
+    48 => <field>:
+        48
+        parse_var
+        child_n
+        AA => <field>:
+            AA
+            parse_n
+            NULL
+            NULL
+        BC => <field>:
+            BC
+            parse_n
+            NULL
+            NULL
+        NK => <field>:
+            NK
+            parse_n
+            NULL
+            NULL
+        ...
+        AS => <field>:
+            AS
+            parse_tlv?
+    ...
+    52 => <field>:
+        52
+        parse_n
+        NULL
+        NULL
+    ...
+    55 => <field>:
+        55
+        parse_var
+        NULL
+        NULL
+    ...
+    61 => <field>:
+        61
+        parse_var
+        child_n
+        1 => <field>:
+            1
+            parse_n
+            NULL
+            NULL
+        2 => <field>:
+            2
+            parse_n
+            NULL
+            NULL
+        3 => <field>:
+            3
+            parse_n
+            NULL
+            NULL
+        4 => <field>:
+            4
+            parse_n
+            NULL
+            NULL
+        5 => <field>:
+            5
+            parse_n
+            NULL
+            NULL
+        6 => <field>:
+            6
+            parse_cup_var
+            child_n
+    ...
+    63 => <field>:
+        63
+        parse_var
+        child_n
+        SM => <field>:
+            SM
+            parse_n
+            NULL
+            NULL
+        TK => <field>:
+            TK
+            parse_tlv
+            NULL
+            NULL
+    ...
+
+
+
+
+
+
+解析:
+
+PARSE f
+    parse() /* 设置pos， len */
+    id = child() /* 如果有子域，那么
+    if (id) 
+        PARSE f->childs[id]
+    
+    parse_event(f->id);
+
+
+2.2 分析
+
+2.2.1 优点
+
+- 解析配置灵活，应对8583报文规范更新和变种
+- 脱敏配置灵活，应对不同的脱敏需求
+
+2.2.2 缺点
+
+- 实现更加复杂
+- 配置稍复杂

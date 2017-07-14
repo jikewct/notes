@@ -97,3 +97,58 @@ CLOCK_MONOTONIC
 * does it make sense to strncpy(dst, src, strlen(src) + 1) ????
 
 * ansi c boolean type is int
+
+* snprintf(char *buf, size_t size, const char *format, ...) 是一个复杂的函数:
+
+几个问题：
+
+1. 是不是snprintf之后buf总是null-terminated? 
+
+如果size > 0； 如果size = 0不会对buf有任何操作
+
+linux平台的snprintf总是null-terminated的;windows平台只有_snprintf，不是null-terminated
+
+2. 返回值的含义？
+
+表示如果buf足够大，encode到buf的字符数（不包括\0)
+
+注意，如果被truncated，返回值可能与一些programmer预期的结果不一致，因此另外一个函数
+
+_scnprintf(char *buf, size_t size, const char *format, ...)
+
+_scnprintf与snprintf的行为一致，除了_scnprintf返回的是真正写入到buf的字节数（不包括\0)
+
+3. 如何判断被truncated
+
+返回值 >= size
+
+4. 示意例程：
+```
+
+#include <stdio.h>
+
+int main()
+{
+    char buf[5];
+    int ret;
+
+    ret = snprintf(buf, sizeof(buf), "%s", "hello");
+
+    printf("%d: %s\n", ret, buf);
+
+    return 0;
+}
+```
+输出
+
+```
+5 hell
+```
+
+
+
+* char *strncpy(char *dst, const char *src, size_t n)
+
+是不是dst总是null-terminated?
+
+NO！ 如果src的前n个字节没有\0，dst将不是null-terminated (c string).
