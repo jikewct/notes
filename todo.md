@@ -272,3 +272,18 @@ UPEL
 anyway 
 start with 1
 
+---------------
+先将libevent中的时间系统吃透;
+memcached源码阅读（架构等）;
+axel和libevent中的http协议，代理，dns等网络内容
+
+今年先将网络知识弄透彻，然后在花一年时间在数据库的研究？
+1. TCP/IP协议栈
+2. socket编程
+3. http/ftp/ssh/dns/smtp等服务器代码研究
+4. terminal/tmux
+
+
+----------------
+为什么libevent，twemproxy这样的高质量代码，我都想不到类似的设计呢？
+为什么高质量代码在设计函数，结构，命名都比我专业？
