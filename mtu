@@ -1,0 +1,80 @@
+1. 修改mtu，并确认生效
+
+
+资料收集
+----------
+>>wikipedia
+
+- Path MTU Discovery ,aka pmtu 可以发现路径最小mtu(因为事先不知道路径中的mut最小值）。
+做法是：
+drop such packets and send back an ICMP "Destination Unreachable (Datagram Too Big)" message containing its MTU.
+
+for example one can change the MSS (maximum segment size) in the initial packet that sets up the TCP connection at one's firewall.
+
+>>http://www.microhowto.info/howto/change_the_mtu_of_a_network_interface.html
+
+- For example, the standard Ethernet MTU is 1500 bytes at the network layer but 1518 bytes at the link layer.
+
+- Most modern networking equipment is capable of handling larger frames but must be explicitly configured to do so. Frames which take advantage of this ability are known as ‘jumbo frames’, and 9000 bytes is a popular choice for the MTU.
+
+Possible reasons for wanting to reduce the MTU include:
+
+matching the MTU to that of another network (in order to avoid fragmentation when carrying UDP, and to streamline PMTU discovery when carrying TCP);
+
+MTUs should not normally be mixed on any given Internet Protocol subnet, however it is possible (and common) for subnets with different MTUs to be connected to each other by means of a router.
+
+修改MTU的方法
+-----------
+
+ifconfig eth0 mtu 1400
+ifconfig eth0 mtu 9000
+ip link set dev eth0 mtu 1400
+ip link list
+
+
+验证MTU的方法
+
+1. netstat -iw
+2. ifconfig eth0
+
+3. You can verify that the path between two machines has at least the expected MTU using the ping command:
+
+    ping -M do -c 4 -s 8972 192.168.0.1
+
+ -M: do， DF=1，禁止分片，使用pmtu协议探测路径中最小mtu
+ -c: count 
+ -s: packet size (icmp 数据包大小，ip头20B，icmp头8B）
+
+if the test is unsuccessful then you should see an error in response to each echo request:
+
+Path MTUs are recorded in the routing cache. This can interfere with testing, and in particular, can make a remote MTU restriction appear to be a local one. You can clear the cache using the ip route command:
+
+ip route flush cache
+
+
+验证与测试
+--------
+# 场景1：
+54 ping 54
+
+测试方法：
+
+    1) ping -M do -c 4 -s 1472 172.20.51.53
+    2) ping -M do -c 4 -s 1473 172.20.51.53
+    3) ping -c 4 -s 1472 172.20.51.53
+    4) ping -c 4 -s 1473 172.20.51.53
+    
+
+
+测试结果：
+
+    1) ping成功
+    2) ping: local error: Message too long, mtu=1400
+    3) ping 成功
+    3) ping 成功
+
+
+
+-------
+确认ping是否使用pmtud是由sysctl控制的！
+确认硬件支持的mtu有限制，确认该限制大小，超过限制的错误信息

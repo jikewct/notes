@@ -272,55 +272,10 @@ UPEL
 anyway 
 start with 1
 
----------------
-先将libevent中的时间系统吃透;
-memcached源码阅读（架构等）;
-axel和libevent中的http协议，代理，dns等网络内容
+<<<<<<< HEAD
 
-今年先将网络知识弄透彻，然后在花一年时间在数据库的研究？
-1. TCP/IP协议栈
-2. socket编程
-3. http/ftp/ssh/dns/smtp等服务器代码研究
-4. terminal/tmux
-
-
-----------------
-为什么libevent，twemproxy这样的高质量代码，我都想不到类似的设计呢？
-为什么高质量代码在设计函数，结构，命名都比我专业？
-=======
-
+----------------------
 1. tagbar
 2. opt dotfiles/setup.sh
-
-
------------
-关于网络环境模拟器
-
-最主要是用来模拟网络环境的延迟，带宽低，网络抖动，网络故障等问题。
-
-类似的产品：
-clumsy：https://jagt.github.io/clumsy/
-netem:http://stackoverflow.com/questions/1094760/network-tools-that-simulate-slow-network-connection
-fiddler:
-dummynet:http://info.iet.unipi.it/~luigi/dummynet/
-comcast:https://github.com/tylertreat/comcast
-
------------
-重构cfg_server
-1. 润色 make it work
-
-
-------------
-
-业界如何做日志归集？
-可不可以向hdfs中写文件？
-如何知道当前文件在那个服务器？
-
-配置中心的一致性问题
-配置中心reload问题！
-
-
-------------------
-1. appconof的md5
-2. appconf reload （kill -1 实现，nohup？）
-
+=======
+>>>>>>> ad1019ebd2d73cfd423cd322675302bd5d464bcb

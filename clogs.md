@@ -320,7 +320,7 @@ clogs的高可用策略
 >>>>>>>
 clt:
 
-/* try recover & islate */
+/* try recover & isolate */
 if now > last_ping + T
     pong_id = recv
     if (pong_id == ping_id + 1) //valid ack
@@ -386,3 +386,552 @@ getting_cfg:
 
 default:
     pass
+
+
+
+------------------------
+Mon May  8 10:13:14 CST 2017
+决定采用clt ha 方案
+经过思考算法如下：
+
+HA_CHK_GAP    5000 /* 5000ms */
+
+enum ha_chk_state { 
+    PONG=0, /* pong received */
+    PING,   /* ping sent, waiting for pong */
+}
+
+struct svr {
+    ...
+    struct timeval  next_ha_chk;            /* next ha chk timestamp */
+    ha_chk_state_t  ha_chk_state;           /* current ha state: ping or pong */
+    int             ha_invalid_cnt;         /* consecutive invalid ha chk count */
+    int             isolated                /* isolated or not ? */
+}
+
+
+algo:
+
+
+## init ##
+svr->ha_chk_state = PONG
+svr->next_ha_chk = 0;
+svr->ha_invalid_cnt = 0;
+svr->isolated = 0;
+
+##send msg##
+
+select svr 
+
+if svr->next_ha_chk <= now:
+     if svr->ha_chk_state == PING:  /* still waiting for ack */
+         ack = drain_ack_nonblock
+         if ack_invalid(ack):
+             svr->invalid_cnt ++
+             try_isolate_svr(svr)
+
+     send ping_msg(svr->ping_id)    /* send ping msg */
+     svr->ping_id += 2
+     svr->next_ha_chk = now + HA_CHK_GAP
+     svr->ha_chk_state = PING
+
+else:
+    if svr->ha_chk_state == PING:   /* waiting for ack */
+        ack = drain_ack_nonblock
+        if ack_valid(ack):
+            svr->ha_chk_state = PONG
+            try_recover_svr(svr)
+
+    else /* got valid ack with in HA_CHK_GAP, waiting for next ha_chk */           
+
+
+
+----------
+编码
+
+1. 如何防止管理员修改系统时间
+参考memcache
+使用clock_gettime能防止，但是这个函数在AIX有么？
+先用timeval & gettimeofday
+
+2. ha时：如果svr isolated 是否需要重新选择？
+不重新选择
+a. 阻塞问题 b.复杂度 TODO
+
+3. 发送，接收ack的协议 done
+
+4. ketama与svr的review（autoeject怎么实现?）done
+
+5. 由于pong不能混在一起，所以必须要让clt中的每个svr包含一个sd，这样下来可能会很多sd！ done
+
+
+---------
+ha
+
+1. review, 从一个更高的角度看下
+2. 调试 & 测试
+a. ping pong
+b. 2->1
+
+测试案例
+a. 2->1->0->1->2
+
+
+-----------
+cli
+参考redis-cli/redis-benchmark提供压测功能
+基本功能：
+clogs-benchmark -n 1000000 --tps 10000 --load-balance 127.0.0.1:6000,127.0.0.1:6001 --mlen 1024 
+之后能统计到实际发送的tps和发送的总量
+
+
+调研redis-cli/benchmark的使用、设计、实现
+
+redis-cli
+
+使用：
+Usage: redis-cli [OPTIONS] [cmd [arg [arg ...]]]
+-h <hostname>      Server hostname (default: 127.0.0.1).
+-p <port>          Server port (default: 6379).
+-s <socket>        Server socket (overrides hostname and port).
+-a <password>      Password to use when connecting to the server.
+-r <repeat>        Execute specified command N times.
+-i <interval>      When -r is used, waits <interval> seconds per command.  It is possible to specify sub-second times like -i 0.1.
+-n <db>            Database number.
+-x                 Read last argument from STDIN.
+-d <delimiter>     Multi-bulk delimiter in for raw formatting (default: \n).
+-c                 Enable cluster mode (follow -ASK and -MOVED redirections).
+--raw              Use raw formatting for replies (default when STDOUT is not a tty).
+--no-raw           Force formatted output even when STDOUT is not a tty.
+--csv              Output in CSV format.
+--stat             Print rolling stats about server: mem, clients, ...
+--latency          Enter a special mode continuously sampling latency.
+--latency-history  Like --latency but tracking latency changes over time.  Default time interval is 15 sec. Change it using -i.
+--latency-dist     Shows latency as a spectrum, requires xterm 256 colors.  Default time interval is 1 sec. Change it using -i.
+--lru-test <keys>  Simulate a cache workload with an 80-20 distribution.
+--slave            Simulate a slave showing commands received from the master.
+--rdb <filename>   Transfer an RDB dump from remote server to local file.
+--pipe             Transfer raw Redis protocol from stdin to server.
+--pipe-timeout <n> In --pipe mode, abort with error if after sending all data.
+no reply is received within <n> seconds.
+Default timeout: 30. Use 0 to wait forever.
+--bigkeys          Sample Redis keys looking for big keys.
+--scan             List all keys using the SCAN command.
+--pattern <pat>    Useful with --scan to specify a SCAN pattern.
+--intrinsic-latency <sec> Run a test to measure intrinsic system latency.
+The test will run for the specified amount of seconds.
+--eval <file>      Send an EVAL command using the Lua script at <file>.
+--help             Output this help and exit.
+--version          Output version and exit.
+
+Examples:
+cat /etc/passwd | redis-cli -x set mypasswd
+redis-cli get mypasswd
+redis-cli -r 100 lpush mylist x
+redis-cli -r 100 -i 1 info | grep used_memory_human:
+redis-cli --eval myscript.lua key1 key2 , arg1 arg2 arg3
+redis-cli --scan --pattern '*:12345*'
+
+理解：
+1. redis-cli要么采用interactive mode，要么采用batch-mode
+2. 由于客户端有load-balance 和 ha等复杂功能，不能直接采用-h -s 等参数指定，直接采用 -c <conf> 指定配置
+3. batch-mode 只要stdin不是tty 那么就是batchmode，该情况fgets读取，否则linoise读取.
+4. 如果在命令行中指定了msg，那么也不会进入到interactive mode中
+
+Usage:
+clt-cli -c <conf> [-r <repeat>] [-i <interval>] [clogs msg(sys_id msg_type filename msg)]
+        --help
+        --version
+
+-c <conf>       config file
+-r <repeat>     send clogs msg N times
+-i <interval>   when -r is used, waits <interval> seconds per command.
+                It's possible to specify a sub-second time like -i 0.1.
+
+--help          print this help and exit.
+--version       print version and exit.
+
+Examples:
+cat test-maps-kv | clt-cli -c /path/to/conf
+clt-cli -c /path/to/conf MAPS kv maps.kv hello=world&foo=bar&k=v
+clt-cli -c /path/to/conf -r 100 -i 0.1 MAPS kv maps.kv hello=world
+
+
+理解：
+1. 同cli一样，没有-h，-p参数，增加-c参数
+2. 需要-c <clients> 指定客户端hdl数量
+3. 不需要从文件中输入消息，能够自动产生随机消息
+4. 
+
+影响clogs性能的关键参数
+-l hdl数量
+-c svr
+-f 文件数量
+-t 消息类型
+-d 消息长度
+
+-n 总消息数量
+一定要指定tps！要不然肯定出现数据udp buffer满，报文大量丢失
+通过何种方式指定？？ sleep ??
+
+实时输出tps数据，最后在统计平均值
+
+Usage: redis-benchmark [-h <host>] [-p <port>] [-c <clients>] [-n <requests]> [-k <boolean>]
+
+    -h <hostname>      Server hostname (default 127.0.0.1)
+    -p <port>          Server port (default 6379)
+    -s <socket>        Server socket (overrides host and port)
+    -a <password>      Password for Redis Auth
+    -c <clients>       Number of parallel connections (default 50)
+    -n <requests>      Total number of requests (default 100000)
+    -d <size>          Data size of SET/GET value in bytes (default 2)
+    -dbnum <db>        SELECT the specified db number (default 0)
+    -k <boolean>       1=keep alive 0=reconnect (default 1)
+    -r <keyspacelen>   Use random keys for SET/GET/INCR, random values for SADD
+    Using this option the benchmark will expand the string __rand_int__
+    inside an argument with a 12 digits number in the specified range
+    from 0 to keyspacelen-1. The substitution changes every time a command
+    is executed. Default tests use this to hit random keys in the
+    specified range.
+    -P <numreq>        Pipeline <numreq> requests. Default 1 (no pipeline).
+    -q                 Quiet. Just show query/sec values
+    --csv              Output in CSV format
+    -l                 Loop. Run the tests forever
+    -t <tests>         Only run the comma separated list of tests. The test
+    names are the same as the ones produced as output.
+    -I                 Idle mode. Just open N idle connections and wait.
+
+    Examples:
+
+    Run the benchmark with the default configuration against 127.0.0.1:6379:
+    $ redis-benchmark
+
+    Use 20 parallel clients, for a total of 100k requests, against 192.168.1.1:
+    $ redis-benchmark -h 192.168.1.1 -p 6379 -n 100000 -c 20
+
+    Fill 127.0.0.1:6379 with about 1 million keys only using the SET test:
+    $ redis-benchmark -t set -n 1000000 -r 100000000
+
+    Benchmark 127.0.0.1:6379 for a few commands producing CSV output:
+    $ redis-benchmark -t ping,set,get -n 100000 --csv
+
+    Benchmark a specific command line:
+    $ redis-benchmark -r 10000 -n 10000 eval 'return redis.call("ping")' 0
+
+    Fill a list with 10000 random elements:
+    $ redis-benchmark -r 10000 -n 10000 lpush mylist __rand_int__
+
+    On user specified command lines __rand_int__ is replaced with a random integer
+    with a range of values selected by the -r option.
+
+
+设计clogs-benchmark
+为什么在cli之后还需要一个benchmark工具，能不能合并到一起？
+1. 定位不同，cli主要回归测试，benchmark性能测试
+2. cli需要输入消息，benchmark自动产生随机消息
+3. cli只有一个hdl，benchmark多个hdl
+4. cli有iteractive mode，benchmark不需要
+
+？？能否用cli的batchmode替代benchmark？
+不好！
+
+所以需要benchmark
+
+Usage:
+clogs-bench -c <conf> [-x <hdl>] [-f <nfile>] [-t <msg_type>] [-d <msg_len>] [-z <tps>]
+            --help
+            --version
+
+-c <conf>       client config
+-x <hdl>        # client handle
+-f <nfile>      # file per handle
+-t <msg_type>   msg type
+-d <msg_len>    message length
+-z <tps>        message sending tps
+
+
+
+
+---------------
+设计方案
+0. 协议
+   clogs报文(报文格式, udp)
+   ping报文(报文格式）
+
+1. 客户端
+   概要设计（handle, 数据结构, 报文组装方式和內存管理）
+   配置文件(示例，解析，動態生效） 
+   ha ha算法，ping报文, 非阻塞, ha与load-balance的配合
+   load-balance ketama一致性哈希，按照文件名进行哈希
+
+2. 服务端
+   内存管理（內存示意圖）
+   脱敏插件系统（插件系统的设计框架）
+
+3. 测试工具
+   clogs-cli batch-mode, interactive-mode, 性能测试
+   clogs-bench bench工具(模拟多客户端）
+
+-----------
+联调配置中心和配置文件动态生效
+
+配置中心的ip,port先放在hdl_init参数中解析，最后可能会放到共享内存
+
+
+hdl_init
+hdl_reload //如果hdl要支持回滚，可以考虑hdl {ohdl, nhdl}
+get_cfg_block();
+
+blen == 0 ??
+
+---------------
+配置文件动态生效：
+clog_svr: 
+对于svr的变更包括增删改
+
+创建+替换：变更瞬间消耗更多的fd，ha状态被重置，但是逻辑更简单易懂;
+
+对比+按需（增加，删除，修改）：变更消耗fd数量减少，ha状态保持，逻辑复杂难把控;
+
+暂时按照创建+替换策略进行。
+
+
+--------------
+方案评审结果
+
+1. 配置中心配置文件指定那些位置是用来hash的（比如说用机构名称作为哈希key，那么
+同一家机构的文件会被hash到同一个位置
+
+2. recv时间可以适当优化（比如发送之后才进行接收，间隔多长时间才进行接收，以降低频次）
+
+-----------
+1. 增加md5&version变化功能
+2. 基本功能测试
+4. 系统测试框架
+
+1. 单笔发送
+2. tps 1 发送
+3. tps 1000 发送
+
+-----------
+A) 测试
+1. 功能测试
+2. 性能测试
+3. 单元测试
+4. 系统测试
+
+B) 优化
+1. clogs_info 非定长
+2. \r\n
+3. 类似于hashtag功能的设计与开发
+4. 优化recv次数，确定技术参数
+
+C）脱敏插件
+1. 8583
+2. fml
+3. xml
+4. tlv
+
+------------------------
+开发8583脱敏插件
+
+两种方案:
+
+1. hardcode 
+
+由于8583的报文规范是统一的，所以每一个域对应的解析方法和脱敏方法都是已知且固定，
+因此可以hardcode, 也不用配置脱敏规则。
+
+1.1 实现
+
+按照8583的报文规范进行编码
+
+1.2 分析
+
+1.2.1 优点
+
+- 实现简单
+- 无需配置
+
+1.2.2 缺点
+
+- 没有在8583中规定的域无法处理
+- 如果8583的规范更新，clogs需要相应更新
+
+
+2. 配置
+
+由于8583报文规范会更新，但是使用的数据描述方法基本不变（定长数据，变长数据，TLV等）
+因此可以通过配置8583的解析和脱敏规则来应对不同的8583报文规范和不同的脱敏需求。
+
+2.1 实现
+
+2.1.1 脱敏
+
+配置：
+
+14,35,36,47.A1,52,55,61.1,61.4[4-6],61.6.AM[17-165],61.6.NM,63.SM
+
+数据结构：
+
+repconf { id : {range,to} }
+
+算法：
+
+解析时产生事件
+通过事件id找到{range,to}
+执行替换
+    
+2.1.2 解析
+
+将8583报文理解为树形结构，8583报文.[2-128域].用法.子域.用法...
+解析每一个层级都会产生一个事件，事件id为以上路径。
+
+
+配置：（暂时不配置，避免解析复杂配置文件；但是在代码中给出模板配置和默认配置）
+
+数据结构：
+
+struct field {
+    char *id;           /* 域id */
+    parse_t parse;      /* 解析本域的函数, n, var... */
+    child_t child;      /* 获取子域id的函数 */
+    u_hash_t childs;    /* 可选子域列表 {id : field} */
+}
+
+
+初始化:
+
+8583:
+    8583
+    parse_8583_hdr
+    incr
+    2 => <field>:
+        2
+        parse_var
+        NULL
+        NULL
+    3 => <field>:
+        3
+        parse_n
+        NULL
+        NULL
+    4 => <field>:
+        4
+        parse_n
+        NULL
+        NULL
+    ...
+    48 => <field>:
+        48
+        parse_var
+        child_n
+        AA => <field>:
+            AA
+            parse_n
+            NULL
+            NULL
+        BC => <field>:
+            BC
+            parse_n
+            NULL
+            NULL
+        NK => <field>:
+            NK
+            parse_n
+            NULL
+            NULL
+        ...
+        AS => <field>:
+            AS
+            parse_tlv?
+    ...
+    52 => <field>:
+        52
+        parse_n
+        NULL
+        NULL
+    ...
+    55 => <field>:
+        55
+        parse_var
+        NULL
+        NULL
+    ...
+    61 => <field>:
+        61
+        parse_var
+        child_n
+        1 => <field>:
+            1
+            parse_n
+            NULL
+            NULL
+        2 => <field>:
+            2
+            parse_n
+            NULL
+            NULL
+        3 => <field>:
+            3
+            parse_n
+            NULL
+            NULL
+        4 => <field>:
+            4
+            parse_n
+            NULL
+            NULL
+        5 => <field>:
+            5
+            parse_n
+            NULL
+            NULL
+        6 => <field>:
+            6
+            parse_cup_var
+            child_n
+    ...
+    63 => <field>:
+        63
+        parse_var
+        child_n
+        SM => <field>:
+            SM
+            parse_n
+            NULL
+            NULL
+        TK => <field>:
+            TK
+            parse_tlv
+            NULL
+            NULL
+    ...
+
+
+
+
+
+
+解析:
+
+PARSE f
+    parse() /* 设置pos， len */
+    id = child() /* 如果有子域，那么
+    if (id) 
+        PARSE f->childs[id]
+    
+    parse_event(f->id);
+
+
+2.2 分析
+
+2.2.1 优点
+
+- 解析配置灵活，应对8583报文规范更新和变种
+- 脱敏配置灵活，应对不同的脱敏需求
+
+2.2.2 缺点
+
+- 实现更加复杂
+- 配置稍复杂
