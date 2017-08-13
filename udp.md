@@ -6,6 +6,7 @@ udp无连接，不可靠。
 
 基本的API包括
 
+```c
 #include <sys/socket.h>
 
 ssize_t recvfrom(int sd, void *buff, size_t nbytes, int flags,
@@ -13,8 +14,8 @@ ssize_t recvfrom(int sd, void *buff, size_t nbytes, int flags,
 
 ssize_t sendto(int sd, const void *buff, size_t nbytes, int flags,
     const struct sockaddr *to, sockelen_t addrlen);
+```
 
-NOTE:
 - UDP可以写一个报文长度为0的报文。
 
 ## misc

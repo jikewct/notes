@@ -142,3 +142,34 @@ twemproxy的链路操作总结：
     connect（一般这个时候，都是EINPROGRESS）
     成功之后，epoll, select, poll会有写事件！(make sense)
 
+
+
+
+-----
+about close/shutdown/FIN/reset
+
+shutdown SHUT_RD, the kernel protocol stack really send no (FIN) packets!!
+
+- shutdown SHUT_RD, will cause block recv to return 0 (logically closed by peer, but discards ongoing msg). 
+  on linux, we could still recv from peer, but would not block; on windows or AIX, behavior is 
+  different; 
+  to summarize the behavior: recv would return 0 instantly, and we should not recv from the connection from now on.
+
+- connect, start the 3-way handshake (processed by tcp/ip stack)
+- accept, get on connection from backlog, block if none (FIN+ACK is not triggered by connect)
+
+- shut_r: local recv return 0; remote can still send
+- shut_w: local send got sigpipe; remote recv return 0
+- close: sigpipe on local and peer; unlike connect, usually close return immediately (while closing in backgroud by kernel) unless so_linger set
+
+
+-----
+for non-blocking network io
+
+- connect: E_INPROGRESS, EAGAIN(no avaliable port)
+- close: 
+- accept: EAGAIN, ENOFILE, EMFILE
+- read, recv, recvfrom, recvmsg: EAGAIN
+- write, send, sendmsg, writev: EAGAIN
+
+connect & close normall would not block, cause kernel tcp/ip stack run in backgroud
