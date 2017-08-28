@@ -34,3 +34,8 @@ bin: a.o b.o
     需要手动写的是bin生成的规则
     其他的规则自动生成，简单明确
 
+
+
+- ?= 如果没有被赋值，则进行赋值;  += 添加到列表 ; := 当前makfile位置变量的值; = 最后makefile变量的值
+- OBJS += $(SSRC:.S=.o) $(CSRC:.c=.o) 表示substitution refs
+https://www.gnu.org/software/make/manual/html_node/Substitution-Refs.html
