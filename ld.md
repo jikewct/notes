@@ -75,6 +75,44 @@ MEMORY
 
 - The name is a region which has no meaning outside of the linker script. Region names will not conflict with symbol names.
 
+## SECTION
+
+```
+SECTIONS
+{
+    sections-command
+    sections-command
+    ...
+}
+```
+
+sections command can be one of:
+
+- an ENTRY command
+- a symbol assignment
+- an output section
+- an overlay 
+
+
+output section looks like :
+
+```
+section [address] [(type)] : [AT(lma)]
+{
+    output-section-command
+    output-section-command
+        …
+} [>region] [AT>lma_region] [:phdr :phdr …] [=fillexp]
+```
+
+output-section-command can be:
+
+- a symbol assignment
+- an input section description
+- data value to include directly
+- a special section keyword
+
+
 
 ## example
 
