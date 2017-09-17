@@ -72,6 +72,8 @@ python -m pdb <xxx.py>
 1. 格式化语法与c printf语法类似: 'my name is %s and weight is %d kg' % ('srzhao', 70)
 2. 判断是否为空 str.isspace()
 3. 转换为数字 int('1'), fload('1.0')
+4. 字符串相等 ==
+5. 字符串切割 split(), strip()
 
 * python-操作符
 三元操作符: x if con_true else y
@@ -143,3 +145,5 @@ print libxx.<func>
 
 
 * python ord() chr() unichr()
+
+* 打印 boolean                  '%s' 就可以，调用的是_str_函数

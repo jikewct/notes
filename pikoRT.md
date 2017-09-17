@@ -43,3 +43,9 @@ so, piko would start from SystemInit when power on.
 ## driver
 
 ## libc
+
+a tiny real-time kernel.
+
+## build
+
+
