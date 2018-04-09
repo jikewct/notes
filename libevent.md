@@ -1,3 +1,24 @@
+# libevent使用过程中的一些问题
+
+- event_add的参数timeout需要一直存在吗？
+- 再cb中event_del了一个active的event，那么active的event还会支持对应的cb不？
+- 能不能对同一个event触发之前执行多次event_add? 
+- 删除一个已经删除，或者从来都没有添加过的event，会发生什么？ 
+- 再执行一个ev的时候，是否能够统计到其他已经触发，但是还没有执行的event？
+- 再某个event cb中，对当前event执行event_pending能否统计到当前?
+- 可不可能cb的event == EV_TIMEOUT|EV_READ ?
+- 传入参数EV_TIMEOUT和传出参数EV_TIMEOUT的对应关系？
+- event_add带timeout与event_add+evtimer_add的性能区别?
+- event_dispatch 执行的过程中是每一次执行cb都会重新loop获取下一个event？否则
+  怎么能再cb中删除别的event？
+
+
+event_pending是一个比较奇怪的函数：
+
+对于EV_READ|EV_WRITE表示已经发生但是尚未执行callback的ev
+对于EV_TIMEOUT表示尚未执行的ev
+
+
 - general idea
 
 ```
@@ -146,4 +167,8 @@ close connection
 
 - dns
 - bufferedevent & evbuffer & tag
+
+
+
+
 

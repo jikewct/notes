@@ -1,0 +1,330 @@
+#upredis-proxy
+
+# ä¸»ä½è®¾è®¡
+
+## äºä»¶åºï¼
+- å¤çé¡ºåºä¸ºERR>READ>WRITEæä»¥ä¼åºç°ï¼
+1ï¼redisæ­é¾ä¹åï¼æ§è¡çæ¯core_err->core_close->server_closeï¼
+2ï¼å¦ææä¸ä¸ªå¤§çpipelineï¼proxyå¯è½ä¼ä¸è´è¯»åï¼å¯¼è´æ æ³åæ¶å°è¯·æ±åéå°redisï¼å¤§pipelineè¶æ¶ï¼
+3) serverçªç¶æ­é¾é£ä¹å¯¼è´æ­£å¨ç­å¾åå¤çå®¢æ·ç«¯æ¶å°server
+
+- READå¸¸é©»/WRITEäºä»¶éè¦çæ¶åæ·»å 
+
+- libeventçrwäºä»¶å¯ä»¥åå«è®¾ç½®ä¸ºä¸¤ä¸ªä¸åçevent
+  ncçäºä»¶æºå¶ä¸­fdä¸cb(core_core)ä¸ä¸æ å°ï¼core_coreæ ¹æ®conn,events æç§E->R->Wå¤çäºä»¶
+  æ¯ä¸ªconnéè¿ä¸åçrecv,send,closeå½æ°æéå®å¶ä¸åçERWè¡ä¸ºã
+
+- loop
+
+a) å¤çreload
+b) event_wait   # é»è®¤stats_interval 10ms; ctx->max_timeoutä¹ä¸º10msï¼
+c) handle_accumulated_signal
+d) core_timeout
+e) core_before_sleep
+
+## æ¶æ¯
+
+```
+msg_recv
+    while (conn->recv_ready)  # recv_ready==0çæåµï¼ EAGAIN; EOF; ERROR
+        msg = conn->recv_next # æ°msgæmbufæ®ä½çnmsg
+        msg_recv_chain  # è¯»æ»¡ä¸ä¸ªmbufï¼å¯¹mbufå½ä»¤éä¸ªmsgè§£æï¼è§£æä¹åè·¯ç±å°å¯¹åºçsvr
+
+msg_send
+    while (conn->send_ready)
+        msg = conn->send_next   # siqçè¿­ä»£å¨
+        msg_send_chain # ä¸æ¬¡sendvï¼sendvä¹åå¯¹mbuf&msgéä¸ªfinalize
+
+```
+
+æ¶æ¯æµè½¬ï¼
+
+Client  READ: è¯»åmsg; msg --> coq, msg --(forward)--> siqï¼æ·»å sconnåäºä»¶
+Server WRITE: siq --> msg; åémsgï¼msg --> soqï¼
+Server  READ: è¯»åpmsg; ä¸soq.firstå»ºç«å³èï¼msgä»siqåºéï¼æ·»å cconnåäºä»¶
+Client WRITE: coq --> msgï¼åépmsgï¼soq -->ï¼éæ¾msg--pmsg
+
+è§£æ:
+
+éè¿ç¶ææºå®ç°: tokennizeï¼stateï¼æµå¼, DFA
+
+1)repairï¼å¦ætokenè·¨ä¸¤ä¸ªmbufï¼é£ä¹å°è¿ä¸ªtokenåæ­å°å¦ä¸ä¸ªmbufï¼
+2)again: tokenæªè¢«åæ­ï¼ä½mbufå·²ç»è¢«æ«æå®æ
+3)ok: mbufå¨è¢«æ«æå®æä¹åï¼å·²ç»è§£æå°ä¸ä¸ªå®æ´çmsgï¼å¦æä¸ä¸ªmsgè·¨è¶ä¸¤ä¸ªmbufï¼é£ä¹è¯¥
+    msgå°æ²ååä¸ºä¸¤ä¸ªmbufï¼i.e. msgä¸mbufæ¯ä¸å¯¹å¤çå³ç³»ï¼
+
+
+è·¯ç±ååçï¼
+conn->recv_done # msg è¯»åè§£æå®æçåç»­å¨ä½
+1) è¿æ»¤ï¼ quit-å¨clientææreplyæ¶å°åå³é­è¿æ¥ï¼authä¹åå½ä»¤ä¸forwardï¼pingå½ä»¤ä¸forwardï¼ç®¡çå½ä»¤ç´æ¥åå¤å®¢æ·ç«¯ä¸æ¯æ
+2) forwardï¼å¦æä¸éè¦forwardï¼ç´æ¥åå¤å®¢æ·ç«¯ï¼å¦æéè¦forwardï¼åè·¯ç±å°æå®çsvr
+
+
+## å¼å¸¸å¤ç
+
+å ä¸ªæ è®°çè¯´æ
+
+msg->done æ å¿çå½åæ¶æ¯çåå¤å·²ç»è¯»åå°äº
+msg->err    msgæ æ³ç»åºæ­£å¸¸åå¤çåå ï¼éå¸¸æ¯errno
+msg->error  æ å¿çè¯¥æ¶æ¯æ æ³ç»åºæ­£å¸¸çåå¤ï¼æ¯å¦åç«¯é¾è·¯æ­äºï¼
+msg->ferror frament msgåºéï¼ferrorå·æä¼ ææ§ï¼
+
+conn->eof å½åè¿æ¥æ¶å°äºfinæ¥æï¼å³é­è¯»åç«¯å£ï¼
+conn->done å½åè¿æ¥å¯ä»¥å³é­ï¼ææåå¤é½å·²ç»åéå®æ¯ï¼
+conn->recv_active æ·»å äºREADäºä»¶
+conn->send_active æ·»å äºWRITEäºä»¶
+conn->err connectionåºç°äºerrï¼æ¯å¦send/recvå¤±è´¥)
+
+CLIENT EOF:
+ç±äºæ æ³åºåå®¢æ·ç«¯å°åºæ¯closeè¿æ¯shutdown_rdï¼å æ­¤å®¢æ·ç«¯æ­é¾å½åshutdown_rdå¤çï¼
+- ç±äºç¬¬äºæ¬¡åcloseçå®¢æ·ç«¯sendä¼å¼åEPIPEï¼å æ­¤proxyåºè¯¥å¤çEPIPEéè¯¯
+- å®¢æ·ç«¯closeæ¶ï¼å¯è½msgè¿æ²¡æå®å¨åå®ï¼è¿é¨åæ¶æ¯å°è¢«ä¸¢å¼
+- åå³é­ç¶æçå®¢æ·ç«¯è¿æ¥è¿è½ç»§ç»­æ¥åsvråæ¥çrspï¼å æ­¤proxyåºè¯¥ç»§ç»­åclientåérsp
+
+å¤çæµç¨ï¼
+conn_recvç»é¾è·¯æä¸eofæ è®°;conn->recv_nextä¸¢å¼ä¸å®æ´msgï¼connåæ­¢readï¼
+
+SERVER EOF:
+æå¡ç«¯EOFè¯´æserverå·²ç»ä¸æ­£å¸¸(crashæèéè¯¯äº)ï¼å æ­¤ç«å³å³é­é¾è·¯ã
+
+å¤çæµç¨ï¼
+conn_recvç»é¾è·¯æä¸eofæ è®°;conn->recv_nextä¸¢å¼ä¸å®æ´msgï¼æ è®°é¾è·¯doneï¼connåæ­¢readï¼
+æ¥çç±äºé¾è·¯doneï¼å³é­serveré¾æ¥:
+- æ è®°siq, soqä¸­çmsgä¸ºerr
+- æ´æ°server->next_retry
+- æ è®°serverä¸ºdead 
+- close
+
+SERVER ERR:
+è¿ç¨åSERVER EOF
+
+CLIENT ERR:
+ç«å³å³é­å®¢æ·ç«¯é¾æ¥ï¼
+- æå¼éå®æ´req 
+- å·²ç»forwardçreqæ è®°ä¸ºswallow
+
+åè®®éè¯¯ï¼proxy,redisé½ç´æ¥å³é­é¾æ¥
+å½ä»¤ä¸æ¯æï¼redisåå¤-ERR unknown command 'xxx'; proxyå°ç´æ¥å³é­é¾æ¥
+- å°connæ è®°ä¸ºerr
+- å®¢æ·ç«¯/æå¡ç«¯é¾æ¥è¢«å³é­
+
+æå¡ç«¯éè¿ï¼
+- æå¡ç«¯æ­é¾ä¹åç¡®å®ä¸æ¬¡next_retryçæ¶é´
+- before sleepæ¶å°è¯éè¿éè¿
+
+## å¯ç ç¸å³
+
+
+## è¶æ¶å¤ç
+
+core_timeout æ ¹æ®å½åçrbtreeè®¡ç®event_waitç­å¾çæ¶é´
+
+å¦æreqè¶æ¶ï¼
+    - æ è®°connä¸ºETIMEOUT
+    - æ­å¼reqæå±çé¾æ¥
+
+ä¸ºäºå¤çconnectè¶æ¶ï¼sever connectæ¶ä¼åtmoä¸­æ·»å ä¸ä¸ªfake msg:
+- å¦æconnectæ­£å¸¸ï¼è¿æ¥ä¹åå é¤è¯¥fake msg
+- å¦æconnectè¶æ¶: fake msgè¶æ¶ï¼è§¦åæ­é¾
+ä»¥ä¸æä½é¿åäºä¸å¯è¾¾çæåµï¼connectè¶æ¶éè¦å¾é¿æ¶é´
+
+
+## ä¸åç»´åº¦çå½ä»¤æè¿°
+
+- filter
+quit 
+
+- frament
+
+- swallow
+
+- noforward
+ping
+auth
+authä¹åéè¦authçå½ä»¤
+ç®¡çå½ä»¤(reload_redis, reload_sentinel, stats, stats_all, migrate)
+
+- noreply
+
+## ç»è®¡ä¿¡æ¯
+
+
+
+## signals
+
+æ¥å¿ç­çº§up          sigttin
+æ¥å¿ç­çº§down        sigttou
+éæ°æå¼æ¥å¿æä»¶    sighup
+éåº                sigint,sigterm(15)
+å¼å¯reqlog          sigusr1
+reload config       sigusr2
+coredump            sigsegv
+
+
+## monitor
+
+# çäº§æ¯æ
+- JDE connection reset by peer
+
+# å¤è¿ç¨
+
+proxy_initä¹åï¼ç±masteråååå»ºworkers, mgmè¿ç¨
+- masterè¿ç¨æ§è¡éäºcore_master_loop
+- workerè¿ç¨æ§è¡ä¸åè¿ç¨nutcrackerç±»ä¼¼
+- mgmè¿ç¨éäºcore_mgm_start
+
+## masterè¿ç¨
+masterè¿ç¨å¨åå»ºäºmgmåworkersè¿ç¨ä¹åï¼ç­å¾å­è¿ç¨ï¼worker,mgm)
+- å­è¿ç¨ä¸­ä»»ä½ä¸ä¸ªè¿ç¨æ­£å¸¸éåºï¼åæ´ä¸ªupredis-proxyéåº
+- å­è¿ç¨ä¸­ä»»ä½ä¸ä¸ªè¿ç¨å¼å¸¸éåºï¼åmasteréå»ºè¯¥è¿ç¨
+
+## mgmè¿ç¨
+- ä¸»çº¿ç¨ç­å¾statsçº¿ç¨
+- statsçº¿ç¨å¤ç
+
+## workerè¿ç¨
+çç¥
+
+ 
+====================================
+
+serverçåå§åè¿ç¨ï¼
+
+server_pool_init:
+    conf_pool_each_transform:
+        server_init:
+            conf_server_each_transform: æ ¹æ®confåå§åserver struct
+    server_pool_run: åå§åä¸è´æ§åå¸ç»æ
+
+
+serverçé¾æ¥å»ºç«è¿ç¨ï¼
+
+core_ctx_create:
+    server_pool_preconnect:
+        server_pool_preconnect_fn:
+            server_each_preconnect:
+                server_connect:socket, setnonblock, setnodelay, event_add_out, connect
+
+deadä¹åéè¿server
+core_before_sleep: 
+    server_reconnect_check:
+        server_connect:socket, setnonblock, setnodelay, event_add_out, connect
+
+autoejectä¹åéè¿
+req_recv_done:è¿æ»¤ï¼è·¯ç±æ¥åå°çreq msg
+    req_forward:
+        server_pool_conn: éæ©server,éæ©connï¼é¾æ¥conn
+            server_connect:socket, setnonblock, setnodelay, event_add_out, connect
+
+- serverçå»ºé¾è¿ç¨åçå¨åå§åpreconnectï¼å®æ¶æ£æ¥ï¼req_forwardæ¶
+- req_forwardå¨server->deadæ¶ä¸connectï¼å¹¶ä¸errnoä¸ºETIMEOUT
+- reconnectåªæå¨server->deadæ¶è¿è¡éè¿
+- deadè¡¨ç¤ºfake ejectï¼å¦æauto ejectï¼ç´æ¥eject;å¦ådead
+- æ¢å¤è¿ç¨ä¸ºï¼
+server_pool_conn:
+    server_pool_update: æ ¹æ®server_retry_timeoutè®¾ç½®çnext_rebuildï¼æ´æ°continuum
+
+å¯¹äºéauto_ejectèè¨ï¼æ¯æ¬¡æ­é¾é½ä¼é æserver_deadï¼
+
+
+ç»¼ä¸ï¼
+- preconnectï¼åå§åé¾æ¥(dead=0)
+- æ­é¾ä¹åï¼æ¯ä¸ªserver_retry_timeoutä¹åéè¿ï¼è¢«å¨|auto_eject_hosts, ä¸»å¨|!auto_eject_host)
+
+
+å¯¹äºslaveåå»ºé¾æ¥çå¯åï¼
+- è®¾ç½®slaveçdead=0, åå§åé¾æ¥ï¼èä¸preconnect **WITH TIMEOUT**
+- æ­é¾ä¹åï¼æ¯éserver_retry_timeoutä¹åéè¿
+
+å¨preconnectæåä¹åï¼proxyæ¶å°äºreqæä¹åï¼:
+req_recv_done:
+    req_forward:
+        server_pool_conn: è¿åä¸ä¸ªconnectingæèconnectedçé¾æ¥
+            server_pool_server
+            server_conn
+            server_connect
+        enqueue siq:
+
+ç»¼ä¸ï¼ connectingçé¾æ¥ç­åäºé¾æ¥å¥½çé¾æ¥
+
+
+å¯¹äºslaveé¾æ¥çå¯åï¼
+- åç°æ°çslaveä¹åpreconnect
+- slave dead æ­é¾ä¹åï¼æ¯éserver_retry_timeoutéè¿
+
+
+
+éç¦»æä½ï¼
+
+trickï¼server_closeå®éä¸çæææ¯conn_close;
+
+server_each_preconnect:connectå¤±è´¥ï¼å³é­è¿æ¥
+    server_close: å¦æconn->sd==-1,ç´æ¥éæ¯conn;å¦åï¼éæ¯æ¶æ¯éåï¼ç¶ååéæ¯conn
+        server_failure: 
+            server->dead = 1; æè server->failure_count++
+
+server_reconnect_check:connectå¤±è´¥ï¼closeè¿æ¥
+    server_close
+
+server_pool_conn: connectå¤±è´¥ï¼closeè¿æ¥
+    server_close
+
+connection_is_drained:??
+    server_close
+
+core_ctx_destroy:
+    server_pool_disconnect
+        server_pool_disconnect_fn:
+            server_each_disconnect:
+                conn->close:
+...
+
+
+
+æ¢å¤æä½ï¼
+a) auto_eject_hosts:
+å°äºnext_rebuildä¹åï¼å¯¹å½åéè¦rebuildçserversï¼update continuumï¼
+è¿æ ·çè¯serverè¢«éæ°æ·»å å°å¯ç¨svrsä¸­
+
+b) !auto_eject_hosts:
+å°äºserver->next_retryä¹åï¼åèµ·reconnectæä½ï¼reconnectæåä¹ådead=0
+
+
+
+å³äºdeadçèç©¶:
+server_close:
+    server_failure: 
+        server->dead = 1; æè server->failure_count++
+æä»¥å¯¹äºconnectionå¤§äº1çserverï¼åªè¦ä¸ä¸ªè¿æ¥åºç°éè¯¯ï¼åå¤æ­server deadæ¯ä¸åççï¼
+
+--------------------
+so:
+- slaveséè¦ä½¿ç¨æ°ç»è¿è¡ç´¢å¼ï¼å¹¶ä¸ç»åºrrindexï¼åªè¦slaveæååï¼rrindexéè¦éæ°æ´æ°
+- è§£æinfoï¼æ°å¢slave: server(slave)_connectï¼å åslave: server_each_disconnect
+
+
+
+---------------------
+ç±äºreloadæ·»å serverçè¿ç¨ä¸infoå¢å slaveçè¿ç¨æ¯è¾ç¸åï¼åæreloadçæä½è¿ç¨ï¼
+
+reloadæä½è§¦åæ¹å¼ï¼
+a) éè¿ä¿¡å·è§¦å
+éè¿ä¿¡å·è§¦åçsignalä¼è¢«pipeå¹¶ä¸åå¹¶å°signals_receivedä¸­ï¼ç¶åè¢«core_loopæ¶è´¹ï¼
+
+core_loop:
+    handle_accumulated_signals:
+        conn_next_signal
+
+NOTE: ç®åçå®ç°ä¸­ï¼ä»¥ä¸æ¶è´¹éå¾å·²ç»æ²¡æç¨ï¼è¯¥loopæ¶è´¹äºsignalä¹åï¼æ²¡æåä»»ä½æä½ã
+
+b) éè¿reload_redisæä»¤è§¦å:
+
+å ä¸ªç¶æïictjqq
+
+workeræ¥åå°reload_rediså½ä»¤ä¹å:
+ctx->stats_reload_redis = STATS_RELOAD_START;
+
+
+c) éè¿sentinel failoverè§¦å:
+
+

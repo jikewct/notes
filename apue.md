@@ -37,3 +37,6 @@ int getopt_long(int argc, char **argv, char *lopts,
 
 如果选项合法，返回选项
 如果选项不合法，返回 '?'
+
+
+* poll 中的fd如果出现POLLERR，那么poll的返回值为-1？什么情况会出现POLLERR?

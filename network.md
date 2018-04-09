@@ -173,3 +173,24 @@ for non-blocking network io
 - write, send, sendmsg, writev: EAGAIN
 
 connect & close normall would not block, cause kernel tcp/ip stack run in backgroud
+
+
+
+
+------------------
+connect 超时:
+    - linux 3.10内核，受setsockopt的影响
+    - AIX 不受setsockopt的影响，75s超时
+
+accept  超时:
+    - linux 3.10内核，受setsockopt影响
+    - AIX 不受setsockopt的影响，不超时
+
+posix没有明确表达过以上行为，因此
+
+----------------
+关于EINTR的意义：
+是不是有可能在写数据的过程中出现EINTR？即write返回ret < requested?
+
+---------------
+getaddrinfo
