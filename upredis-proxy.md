@@ -799,3 +799,52 @@ config_reload_redis:
 --------------------
 request标记
 
+------------------
+server->next_retry server断链之后，下次重试的时间。server_failure设置好下次重试时间，server_ok清除该时间。
+
+server->next_rebuild
+
+server->pname
+
+server->name
+
+server->weight
+
+
+`set k v`最后怎么找到对应的svr发送出去？
+
+
+------------------------
+思考以下问题：
+
+- 如果mset k1 v1 k2 v2 ... kn vn在frag之后，SVR[i]被隔离剔除，会不会造成该消息无法返回？
+- 如果mset k1 v1 k2 v2 ... kn vn部分超时，会不会造成sub_msg内存泄露？
+- 为什么从代码上看，每一个req都通过reqlog记录（时间，从那到哪...）？默认的日志级别到底是哪个？为什么链接日志被打印，但是其他日志没有被打印？
+
+
+关于fragment的分析
+
+req：
+
+- MGET/DEL/MSET，按照步长1/2进行切片。
+- 切片之后msg 进行fake reply，submsgs forward;
+
+rsp：
+
+- 先pre_coalese：整理好mbuf
+- 再判断是否req_done
+- post_coalesce: 将整理好的回复合并起来。
+
+req_done的标准：
+
+- 不需要fragment的被标记为done
+- 需要fragment的：a. 已经被标记为fdone b. 跟当前submsg在一条线上的所有submsg已经被标记为done
+
+什么情况submsg会被标记为done:收到rsp就是done
+什么时候submsg会被free掉，并且不会被发送到客户端链接中:
+
+
+
+
+
+
