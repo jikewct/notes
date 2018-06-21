@@ -35,6 +35,20 @@ For Arrays the first byte of the reply is "*"
 
 ## Expire
 
+- slave不会因为超时修改keyspace，master expire时通过广播DEL命令保证超时
+- type, ttl命令不会更新lru
+
+### `lookupKey*`
+
+```
+lookupKey //从expire表中查找key，不考虑超时；
+lookupKeyReadWithFlags //为读操作查找key，副作用：超时;更新hits/misses;更新lru
+expireIfNeeded  //返回是否超时，如果master则从keyspace删除，如果slave则不删除
+```
+
+
+### redis-3.2改进
+
 为了保持master-slave之间对于超时的一致性，超时key的剔除是master主导的: 当master
 上的key过期后，master向slave发送DEL实现过期key的删除。
 
@@ -45,8 +59,7 @@ slave上返回stale data，但是在master上返回nil。这对于读写分离�
 所以在3.2中，修改lookupKeyRead：当前redis为slave（并且不是master客户端）可以返回
 NULL，但是实际上不会对keyspace做修改。
 
-`lookupKey*`
-------
+
 
 
 
