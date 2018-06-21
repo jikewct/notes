@@ -16,3 +16,5 @@ https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/7/html/de
 https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/7/html/developer_guide/gcc-using-libraries#gcc-using-libraries_using-both-static-dynamic-library-gcc
 https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/7/html/developer_guide/gcc-using-libraries
 
+# 2018-06-19
+
