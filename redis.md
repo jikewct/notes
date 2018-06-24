@@ -25,13 +25,44 @@ For Arrays the first byte of the reply is "*"
 
 ## 事件循环
 
+### readQueryFromClient
 
-安装WRITE事件：
+- 单次read的大小不超过16k
+- 对于超过32k的bulk string, 尽量让querybuf只包含这个sds，以避免process时创建robj拷贝过大的buf
 
-- server.clients_pending_write # 等待安装write handler的客户端。
+### processInputBuffer
+
+- redis支持INLINE和MULTIBULK两种协议的命令
+- block的客户端，query将被及时read，但是不会被及时process
+- 解析过程中发现protocol error，client标记为`CLOSE_ASAP`
+- 没有完整接收的request，不会执行processCommand
+
+### processCommand
+
+- 常规检查quit, command table, auth, moved, maxmemory, stop write on bgsave err, repl min slaves to write, readonly slave, pub/sub, slave server stale data, loading, lua timedout, transaction
+- freeMemoryIfNeeded控制内存在maxmemory限制下，如果没控制住则返回ERR（客户端会的oom错误）
+- 最终call执行命令
+
+### call
+
+- feed monitor, proc, propagate, also propagate
+- 最终在propagate中将命令传播到aof，slaves
+
+### propagate
+
+### 安装WRITE事件
+
+- `server.clients_pending_write` # 等待安装write handler的客户端。
 - `addReply*`分散在数据结构中，随着命令执行reply被准备好。
 - prepareClientToWrite: 准备安装WRITE事件; 决定需要拷贝reply到buffer
 - 客户端在before sleep尝试将reply发送出去(不超过64K)，只有evloop写不完所有reply才会安装write handler。
+
+
+### 问题
+
+- 通过对redis解析的分析，我们可以通过制造不完整的协议对redis进行DDOS攻击: `*3\r\n$3\r\nset\r\n$4\r\nddos\r\n$2147483647\r\n`
+> 实际上并不可以，因为sdsMakeRoomFor最大premalloc 1MB
+
 
 ## Expire
 
@@ -61,14 +92,12 @@ NULL，但是实际上不会对keyspace做修改。
 
 
 
-
-
 ### 相关issues
 
 [Improve expire consistency on slaves ](https://github.com/antirez/redis/issues/1768)
 [Better read-only behavior for expired keys in slaves.](https://github.com/antirez/redis/commit/06e76bc3e22dd72a30a8a614d367246b03ff1312)
 
-## redisObj
+## 数据结构
 
 - EMBSTR 为了减少sds头占用的内存，对于44B之内的String新增EMBSTR编码
 
@@ -76,8 +105,46 @@ NULL，但是实际上不会对keyspace做修改。
 ### 相关issues
 
 [关于lru，lfu value error](https://github.com/antirez/redis/pull/5011)
-  
 
+## lazy free
+
+redis-4.0引入的feature，思路为使用后台线程完成异步删除。
+
+比较有意思的是lazy free的引入，需要redis修改share everything的设计理念，同时由于
+WRITE写small object效率低(writev效果也不好），所以WRITE已经在拷贝small object，
+所以这个说明share small object的机制有问题。
+
+4.0之前聚合类型的value为robj，如果不share也没必要用robj进行引用计数，因此聚合类型
+表示为hashtable of sds（而不是hashtable of robj），但是带来的影响是无法复用parse
+阶段创建的robj，而是需要duplicate sds，但由于redis性能由cache miss主导，因此可能
+redis的性能不会因此下降。
+
+总结下，重构做出的修改为：
+
+- client output buf(cob)从robj修改为sds，value总是被拷贝到cob
+- 所有数据结构使用sds替换robj
+
+虽然如此，在重度sharing的replication、command dispatch等代码中依然使用robj。
+
+结果显示在数据结构抛弃robj后，redis更加内存高效；经测试，redis更加快速。
+
+最后lazy free特性增加了UNLINK命令，FLUSHDB/FLUSHALL增加了ASYNC选项。
+
+由于聚合类型现在fully unshared，cob也不含有shared obj，redis可以做到：
+
+- 可以实现多线程IO：不同的客户端可以对应不同的线程
+- 可以在后台线程执行聚合类型的特定慢操作
+
+另外可以考虑采用share-nothing架构来重构redis以获取比redis更好的性能。
+
+### SADD SUNIONSTORE (4.0 vs 3.2)
+
+
+
+### issues
+
+[Lazy Redis is better Redis](http://antirez.com/news/93)
+[Lazy free of keys and databases](https://github.com/antirez/redis/issues/1748)
 
 ## lua
 
@@ -363,6 +430,40 @@ feedAppendOnlyFile:
 
 - propagate
 - expire && evicted (propagateExpire)
+
+## LRU & LFU
+
+redis object中含有24bit的LRU clock(当前unix timestamp in seconds)。但redis没有
+办法使用链表将整个database链接起来（fat pointer），因此redis采用简单采样并剔除
+best candidate方法来近似LRU算法。
+
+ 3.0改进以上缺点(LRU V2) 2.8剔除没有跨db考虑，并且没有利用多次采样的信息，提高
+了LRU的准确率。4.0提出了LFU算法，
+
+redis-cli添加了一个--lru-test模式，用于测试lru的准确率。
+
+LFU算法的基本思路即使log counter with decay。
+
+## security 
+
+redis不建议在一个开放的网络环境中使用，一些比较危险的命令可以通过重命名隐藏。
+
+### protect mode
+
+redis-3.2之后，如果redis绑定了所有的网卡并且没有密码保护，那么redis将进入protect
+模式。在该模式下，redis只对来自loopback网卡的请求正常回复，而来自互联网的请求将
+被拒绝。
+
+### 参考
+
+[Redis Security](https://redis.io/topics/security)
+[A few things about Redis security](http://antirez.com/news/96)
+[Redis Lua scripting: several security vulnerabilities fixed](http://antirez.com/news/119)
+[Clarifications on the Incapsula Redis security report](http://antirez.com/news/118)
+
+# Redis-cli
+
+# Redis-benchmark
 
 # Hiredis
 
@@ -943,4 +1044,7 @@ Flash作为冷数据的存储介质，支持大数据量和sub-millisconds延迟
  基本上商业版的思路是2B，具体还是异地复制和冷热分离。
 
 
+# contrib
+
+- evict.c:444 typo
 
