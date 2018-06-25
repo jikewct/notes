@@ -24,6 +24,13 @@ e) core_before_sleep
 
 ## 消息
 
+### 解析
+
+- 解析过程的复杂性在于msg分散到多个事件循环读取，msg分散到多个mbuf存储，一次读取的数据量可能包含X.Y个msg
+- `conn->rmsg`用于保存正在读取、解析的msg（考虑msg分到两个事件循环读取）
+- recv->recv_chain->parse->parsed->recv_done->forward 这个过程都是在STAILQ_LAST(msg->mhdr, mbuf, next)上进行的
+- parsed过程完成了mbuf, nbuf, msg, nmsg的衔接
+
 ```
 msg_recv
     while (conn->recv_ready)  # recv_ready==0的情况： EAGAIN; EOF; ERROR

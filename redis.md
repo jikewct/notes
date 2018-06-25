@@ -33,6 +33,10 @@ For Arrays the first byte of the reply is "*"
 - prepareClientToWrite: 准备安装WRITE事件; 决定需要拷贝reply到buffer
 - 客户端在before sleep尝试将reply发送出去(不超过64K)，只有evloop写不完所有reply才会安装write handler。
 
+## 日志
+
+- logrotate issue为什么说redis的日志是可以随时删除的？
+
 ## Expire
 
 - slave不会因为超时修改keyspace，master expire时通过广播DEL命令保证超时
@@ -43,9 +47,10 @@ For Arrays the first byte of the reply is "*"
 ```
 lookupKey //从expire表中查找key，不考虑超时；
 lookupKeyReadWithFlags //为读操作查找key，副作用：超时;更新hits/misses;更新lru
+lookupKeyWrite //expire + lookup
+lookupKeyRead //expire + logical expire
 expireIfNeeded  //返回是否超时，如果master则从keyspace删除，如果slave则不删除
 ```
-
 
 ### redis-3.2改进
 
@@ -60,23 +65,45 @@ slave上返回stale data，但是在master上返回nil。这对于读写分离�
 NULL，但是实际上不会对keyspace做修改。
 
 
-
-
-
 ### 相关issues
 
 [Improve expire consistency on slaves ](https://github.com/antirez/redis/issues/1768)
 [Better read-only behavior for expired keys in slaves.](https://github.com/antirez/redis/commit/06e76bc3e22dd72a30a8a614d367246b03ff1312)
 
-## redisObj
+## datastructure
 
 - EMBSTR 为了减少sds头占用的内存，对于44B之内的String新增EMBSTR编码
+- quicklist
+
+### list
+
+三种encoding。
+
+#### ziplist
+
+- 2B overhead, 但是修改ziplist引发realloc、copy、CPU cache miss
+
+#### linklist
+
+- 40B overhead, 对于小对象效率低
+
+#### quicklist
+
+- linked list of ziplists
+- 内存效率高
+
+[Quicklist Final](https://matt.sh/redis-quicklist-visions)
+
+
+### hyperloglog
+
+用非常少的内存统计了scard，redis使用了12kB并且错误率只有0.81%。
+
 
 
 ### 相关issues
 
 [关于lru，lfu value error](https://github.com/antirez/redis/pull/5011)
-  
 
 
 ## lua
@@ -141,6 +168,269 @@ redis.status_reply
 - https://github.com/antirez/redis/issues/1768
 - https://github.com/antirez/redis/issues/187
 
+## Module
+
+### 使用
+
+
+```
+module load argv ... 
+module unload
+module list
+```
+
+### 设计思路
+
+- static modules    {name:RedisModule}
+- server.moduleapi  {funcname:funcptr}
+- 每个module实现onload函数，module load时外调RedisModule_OnLoad(argv), 初始化RedisModule，添加到server.modules
+- onload: svr通过ctx传入RM_GetApi指针，调用RedisModule_Ini內暴，最后被注册到server.modules
+- RedisModule_Init内暴：拷贝`RM_*`函数指针到so的`RedisModule_*`指针，设置module属性
+- RM_CreateCommand 注册command到server.commands
+
+
+### API
+
+module API 分为高级和低级API
+
+#### 高级API
+
+包括Call和一组访问reply的函数。
+
+```
+RedisModule_Call(ctx, "INCR", "sc", argv[1], "10");
+ctx 
+"INCR" -- 第一个参数必须是cstring command name
+"sc" -- cstring format specifier
+argv[1].. -- args
+
+format specifier
+--- 
+c -- Null terminated C string pointer.
+b -- C buffer, two arguments needed: C string pointer and size_t length.
+s -- RedisModuleString as received in argv or by other Redis module APIs returning a RedisModuleString object.
+l -- Long long integer.
+v -- Array of RedisModuleString objects.
+! -- This modifier just tells the function to replicate the command to slaves and AOF. It is ignored from the point of view of arguments parsing.
+```
+
+返回值为RedisModuleCallReply或者NULL（错误时），可以通过`RedisModule_CallReply*`
+函数访问。
+
+```
+RedisModule_CallReplyType 获取返回结果类型REDISMODULE_REPLY_STRING, REDISMODULE_REPLY_ERROR, ...
+RedisModule_CallReplyLength 如果string或者error，length为字符串长度；如果是array，length为元素个数
+RedisModule_CallReplyInteger 获取integer类型的值
+RedisModule_CallReplyArrayElement 获取array类型的子元素
+RedisModule_CallReplyStringPtr 获取string类型的返回值的指针和长度，但是不能修改ptr指向的值
+RedisModule_CreateStringFromCallReply 根据CallReply(string,error,integer)创建RedisModuleString
+```
+
+`RedisModule_FreeCallReply`释放reply，array类型的回复只需要释放顶层reply。
+
+`RedisModule_ReplyWith*`回复客户端。
+
+#### 低级API
+
+通过`RedisModule_*Key`增删读key，`RedisModule_*Expire`操作过期。
+
+#### 复制
+
+RedisModule_Call的format中添加'!'表示该命令需要propagate到AOF和slaves，效果与
+lua的replicate_commands效果类似，`RedisModule_ReplicateVerbatim`可以达到与lua
+默认的复制类似的效果。
+
+`RedisModule_Replicate`可以显示指定复制的命令。
+
+在一条command中执行的复制将会通过MULTI/EXEC包装，以保证执行的原子性。
+
+#### 自动内存管理
+
+`RedisModule_AutoMemory`用于开启内存管理。
+
+module中提供了一组内存申请释放API，使用这些API申请的内存可以通过INFO命令看到
+统计值，并且受到maxmemory的限制。
+
+`RedisModule_PoolAlloc`提供了类似于memory root的使用方式。
+
+#### Native type
+
+TODO
+
+#### API列表
+
+```
+内存操作
+---
+Alloc
+Calloc
+Realloc
+Free
+Strdup
+
+register
+---
+CreateCommand               注册命令
+SetModuleAttribs            设置模块属性
+IsModuleNameBusy            判断模块名是否被占用
+
+check
+---
+WrongArity                  回复参数个数错误
+KeyType                      String, List, Set...
+
+高级API
+---
+Call
+CallReplyProto
+FreeCallReply
+CallReplyInteger
+CallReplyType
+CallReplyLength
+CallReplyArrayElement
+CallReplyStringPtr
+
+reply
+---
+ReplyWithLongLong           回复
+ReplyWithError
+ReplyWithSimpleString
+ReplyWithArray
+ReplySetArrayLength
+ReplyWithString
+ReplyWithStringBuffer
+ReplyWithNull
+ReplyWithCallReply
+ReplyWithDouble
+
+Key
+---
+OpenKey                      打开key handle
+CloseKey
+ValueLength             
+DeleteKey
+UnlinkKey
+SetExpire
+GetExpire
+
+DB
+---
+GetSelectedDb
+SelectDb
+
+List
+---
+ListPush
+ListPop
+
+String
+---
+StringSet
+StringDMA
+StringTruncate
+
+
+StringToLongLong
+StringToDouble
+CreateStringFromCallReply
+CreateString
+CreateStringFromLongLong
+CreateStringFromString
+CreateStringPrintf
+FreeString
+StringPtrLen
+AutoMemory
+
+replication
+---
+Replicate
+ReplicateVerbatim
+
+zset
+---
+ZsetAdd
+ZsetIncrby
+ZsetScore
+ZsetRem
+ZsetRangeStop
+ZsetFirstInScoreRange
+ZsetLastInScoreRange
+ZsetFirstInLexRange
+ZsetLastInLexRange
+ZsetRangeCurrentElement
+ZsetRangeNext
+ZsetRangePrev
+ZsetRangeEndReached
+
+hash
+---
+HashSet
+HashGet
+
+IsKeysPositionRequest
+KeyAtPos
+GetClientId
+GetContextFlags
+PoolAlloc
+CreateDataType
+ModuleTypeSetValue
+ModuleTypeGetType
+ModuleTypeGetValue
+SaveUnsigned
+LoadUnsigned
+SaveSigned
+LoadSigned
+SaveString
+SaveStringBuffer
+LoadString
+LoadStringBuffer
+SaveDouble
+LoadDouble
+SaveFloat
+LoadFloat
+
+EmitAOF
+Log
+LogIOError
+StringAppendBuffer
+RetainString
+StringCompare
+GetContextFromIO
+BlockClient
+UnblockClient
+IsBlockedReplyRequest
+IsBlockedTimeoutRequest
+GetBlockedClientPrivateData
+AbortBlock
+Milliseconds
+
+GetThreadSafeContext
+FreeThreadSafeContext
+ThreadSafeContextLock
+ThreadSafeContextUnlock
+
+DigestAddStringBuffer
+DigestAddLongLong
+DigestEndSequence
+
+SubscribeToKeyspaceEvents
+RegisterClusterMessageReceiver
+SendClusterMessage
+GetClusterNodeInfo
+GetClusterNodesList
+FreeClusterNodesList
+CreateTimer
+StopTimer
+GetTimerInfo
+GetMyClusterID
+GetClusterSize
+GetRandomBytes
+GetRandomHexChars
+BlockedClientDisconnected
+
+SetDisconnectCallback
+GetBlockedClientHandle
+```
 
 ## pub/sub
 
@@ -189,21 +479,10 @@ CLIENT SETNAME connection-name
 CLIENT GETNAME
 ```
 loading过程有点特殊：
+
 - slave可以执行lua写命令（正常只有master客户端可以）
 
 
------------
-
-关于psync2
-
-
-----------
-关于block operation
-
-----------
-关于monitor
-
-----------
 关于client unlink, reset, free, freeasync 
 
 server->current_client
@@ -220,9 +499,6 @@ unlinkClient:
     close sockets, remove IO handler, remove references
 
 freeClientAsync:qa
-
--------
-
 
 
 ## 复制
@@ -363,6 +639,27 @@ feedAppendOnlyFile:
 
 - propagate
 - expire && evicted (propagateExpire)
+
+
+### PSYNC2
+
+TODO
+
+### Lazy Free
+
+TODO
+
+## 内存
+
+### MEMEORY
+
+### Maxmemory & Oom
+
+### LFU & LRU
+
+LFU--使用频率最低的被剔除，LRU--access最晚的被剔除。
+
+### Active Defrag
 
 # Hiredis
 
@@ -582,7 +879,7 @@ redis-4.0 主要发布modules子系统和PSYNC2。
 
 详细信息参考[redis-4.0](/cdb/redis-4.0)。
 
-#### modules子系统
+#### module子系统
 
 redis-4.0提供了模块子系统，用于扩展redis功能。目前比较典型的模块包括：
 
@@ -661,7 +958,7 @@ redis-5.0.x主要发布新增的数据类型stream。
 
 #### stream
 
-Redis Stream参考kafka设计理念，
+Redis Stream参考kafka设计理念。
 
 #### 主要变动
 
@@ -712,7 +1009,6 @@ GEO功能对于扩展应用场景、PSYNC2功能对于降低failover时全量复
 1. 同步复制
 
 同步复制方案是否变更到WAIT方案
-
 
 ## 评审问题
 
@@ -940,7 +1236,7 @@ Flash作为冷数据的存储介质，支持大数据量和sub-millisconds延迟
 
 ## 总结
 
- 基本上商业版的思路是2B，具体还是异地复制和冷热分离。
+ 基本上商业版的思路是2B，落地功能点为异地复制和冷热分离。
 
 
 
