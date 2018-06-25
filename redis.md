@@ -48,14 +48,95 @@ For Arrays the first byte of the reply is "*"
 - feed monitor, proc, propagate, also propagate
 - 最终在propagate中将命令传播到aof，slaves
 
+call在不同的场景下，使用的flags不同:
+
+- 在server场景：CMD_CALL_FULL
+- 在multi/exec场景：CMD_CALL_FULL
+- 在lua场景：CMD_CALL_SLOWLOG|CMD_CALL_STATS|（如果开启replicate_commands）CMD_CALL_PROPAGATE_REPL|CMD_CALL_PROPAGATE_AOF
+- 在module场景: CMD_CALL_SLOWLOG|CMD_CALL_STATS|（如果开启replicate）CMD_CALL_PROPAGATE_REPL|CMD_CALL_PROPAGATE_AOF
+
 ### propagate
 
-### 安装WRITE事件
+propagate涉及模块lua，aof，replication，dirty等，比较复杂。
 
-- `server.clients_pending_write` # 等待安装write handler的客户端。
-- `addReply*`分散在数据结构中，随着命令执行reply被准备好。
-- prepareClientToWrite: 准备安装WRITE事件; 决定需要拷贝reply到buffer
-- 客户端在before sleep尝试将reply发送出去(不超过64K)，只有evloop写不完所有reply才会安装write handler。
+
+```
+# 控制propagate是否开启，开启范围。比如redis.replicate_commands, redis.set_repl; module的'!'
+CMD_CALL_PROPAGATE
+CMD_CALL_PROPAGATE_REPL
+CMD_CALL_PROPAGATE_AOF
+
+# lua.replicate_commands时，不能propagate eval/evalsha命令，因此需要禁止propagate
+# spop替换为SREM进行propagate
+CLIENT_PREVENT_PROP
+CLIENT_PREVENT_AOF_PROP
+CLIENT_PREVENT_REPL_PROP
+
+# script load(script cache被flush之后，重新propagate EVAL）
+CLIENT_FORCE_REPL
+CLIENT_FORCE_AOF
+
+```
+
+also propagate
+
+call执行的时候，以下场景会引发also propagate：
+- `spop [count]`命令将被替换成SREM（需要also propagate）
+- lua replicate commands时，EXEC是需要also propagate的
+
+### `AddReply*`
+
+`addReply*`分散在数据结构中，随着命令执行reply被准备好。
+
+#### prepareClientToWrite
+
+决定是否需要拷贝reply到obuf，准备安装WRITE事件。
+
+以下不添加obuf；
+
+- lua应答不添加obuf
+- `CLIENT REPLY OFF` or `CLIENT REPLY SKIP`不添加obuf
+- master-link上除了`replconf ack <offset>`不添加obuf
+- aof client不添加obuf
+
+安装WRITE事件：
+
+只有在当前没有Pending reply，并且repl state为ONLINE时才安装WRITE事件。
+
+客户端在before sleep尝试将reply发送出去(不超过64K)，只有evloop写不完所有reply才
+会安装write handler。
+
+
+#### 添加到obuf
+
+NOTE: redis-4.0之前obuf.reply为`[obj]`，4.0之后为`[sds]`。
+
+
+```
+c->buf          # obuf.buf, 静态reply，16k
+c->bufpos       # obuf.buf read指针
+c->reply        # [sds]，每个sds的大小接近16k
+c->reply_bytes  # reply总大小
+c->sentlen      # obuf.buf 当前正在发送的sds的指针（包括reply和buf）
+
+addReply -- string
+addReplySds -- sds
+addReplyString -- buf
+addReplyErrorLength -- buf
+addReplyError -- cstring
+...
+```
+
+### handleClientsWithPendingWrites
+
+在epoll之前，尝试将reply尽量写完（说不定可以减少write event的安装次数）
+
+#### writeToClient
+
+- 按照obuf.buf --> obuf.reply的顺序发送，每个loop单个客户端最多发送64k
+- 当obuf从有到无转变，则uninstall WRITE事件，关闭CLOSE_AFTER_REPLY客户端
+
+只有在beforesleep含有没写完的客户端才需要安装WRITE事件。
 
 ## 日志
 
@@ -203,25 +284,30 @@ redis.debug
 redis.error_reply
 redis.status_reply
 
-### lua与复制
+### replication
 
 - eval将被完整地复制到slave中执行
 - evalsha在master确认slave确认已经含有script的情况下才会执行evasha，否则将会转换成eval执行
+
+redis-3.2引入了script effect replication和selective replication特性，用于精细
+控制lua的复制方式。
+
+```
+redis.replicate_commands() #注意必须在执行写命令之前调用，否则fallback到whole script replication
+
+# 通过函数主动控制复制范围
+redis.set_repl(redis.REPL_ALL); -- The default
+redis.set_repl(redis.REPL_NONE); -- No replication at all
+redis.set_repl(redis.REPL_AOF); -- Just AOF replication
+redis.set_repl(redis.REPL_SLAVE); -- Just slaves replication
+
+```
 
 ### lua与aof
 
 - eval将被原样记录到AOF中
 - evalsha第一次（或者rewrite之后第一次）转换成eval执行，后续直接记录evalsha
 - rewriteaof之后，aof中不再存有scriptload，evalsha等命令
-
-### lua与aof-binlog
-
-- lua的复制和AOF是通过multi和exec做的？
-
-### lua与aof-binlog合并
-
-- 由于aof-binlog如果不指定replicate_commands，默认是replicate_scripts，这样的合并的意义不大
-
 
 ### 超时
 
@@ -687,14 +773,12 @@ call(c, flags):
 - processCommand
 - lua redis.call flags为REDIS_CALL_SLOWLOG | REDIS_CALL_STATS（不需要propagate)
 
-
 propagate:
 
 - execCommandPropagateMulti
 - pub/sub
 - call & dirty
 - lua script load / evasha --> eva
-
 
 replicationFeedSlaves:
 
@@ -1346,4 +1430,85 @@ Flash作为冷数据的存储介质，支持大数据量和sub-millisconds延迟
 # contrib
 
 - evict.c:444 typo
+
+# upredis-tests
+
+## tcl
+
+tcl的设计受shell影响较大，但是补全了shell中缺少的namespace
+param package scope file socket等缺失特性。
+
+package
+source
+set
+::
+proc
+{}
+[]
+''
+""
+dict
+args
+global
+upvar
+argc
+argv0
+argv
+pkg_mkindex
+load
+_
+
+socket
+fconfigure
+
+end
+
+exec
+
+
+## tcl-redis
+
+c/s模型，多进程socket通信。
+
+### 使用方式
+
+./runtest --help 
+--valgrind         Run the test over valgrind.
+--accurate         Run slow randomized tests for more iterations.
+--quiet            Don't show individual tests.
+--single <unit>    Just execute the specified unit (see next option).
+--list-tests       List all the available test units.
+--clients <num>    Number of test clients (default 16).
+--timeout <sec>    Test timeout in seconds (default 10 min).
+--force-failure    Force the execution of a test that always fails.
+--help             Print this help screen.
+
+--tags <-denytag|allowtag>
+--client <port>
+--port
+--accurate 
+
+### c/s模型
+
+test_server_main
+    accept_test_clients
+        read_from_test_client
+
+消息格式
+<bytes>\n<payload>\n 
+
+c-->s: <status> <details>
+status包括：ready, testing, ok, err, exception, done
+s-->c: <cmd> <data>
+
+
+需要注意的是这里的c/s与redis-server，redis-client概念不同。
+
+测试中的c完成了启动svr，连接svr，发起命令和收集结果；
+测试中的s完成测试任务分发，测试结果收集，测试客户端管理。
+
+
+### 小结
+
+
 
