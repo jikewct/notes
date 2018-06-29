@@ -1,4 +1,9 @@
 
+# limits
+
+`sizeof(long)`和`sizeof(void*)`相等：long的长度与指针相同
+
+
 * 关于typedef和struct
 参考回答：http://stackoverflow.com/questions/252780/why-should-we-typedef-a-struct-so-often-in-c
 

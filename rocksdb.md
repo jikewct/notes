@@ -9,6 +9,7 @@
 
 ### 模块组织
 
+```
 | --- | ---------------          | -----------------                                     |
 | WAL | Write Ahead Log          | 数据库日志，类似于redolog                                      |
 | SST | ??                       | leveldb的数据存储文件，文件中的kv默认按字典序排列              |
@@ -19,10 +20,11 @@
 | sn  | sequence number,snapshot | 数据版本号，snapshot表示也是版本号                             |
 | ve  | version edit             | 数据库变更记录，包括: New file, Delete file, Comparator edit等 |
 | Vs  | Version Set              | 数据所有活动Version                                            |
-
+```
 
 ### 文件组织
 
+```
 | --------      |      ------------                                          |
 | IDENTITY      | 复制使用的uniq id                                          |
 | LOCK          | 锁文件，rocksdb db只能由一个进程打开（可以有多个readonly） |
@@ -33,14 +35,19 @@
 | OPTIONS-yyyy  | 配置文件                                                   |
 | CURRENT       | 指向当前MANIFEST                                           |
 | MANIFEST-zzzz | MANIFEST文件，数据库版本变更日志文件                       |
+```
 
 ### 操作
 
+
+```
 | ------        | ------------------------------------------------------------          |
 | switch        | Memtable和WAL切换;切换时WAL切换新文件和mm-->imm;WAL或者mm full时触发switch操作。          |
 | flush         | 将imm写入到sst文件；超过max_write_buffer_number将触发flush操作；flush操作由threadpool执行 |
 | minor compact | level0-->level1（与major compact不同的是level0文件key范围可重叠)                          |
 | major compact | levelN-->levelN+1，N>=1                                                                   |
+
+```
 
 ## write分析
 
@@ -211,8 +218,7 @@ Next: 取出当前minheap top（就是返回值），然后top.Next()，再把to
 
 ## TODO
 
-```
-## options分析
+## options
 
 ## MVCC
 
@@ -227,14 +233,6 @@ Next: 取出当前minheap top（就是返回值），然后top.Next()，再把to
 ## 统计信息
 
 ## 无锁编程
-
-```
-# 关于rocksdb
-
-基于leveldb并对于flash存储进行了优化一个kv存储引擎。
-
-- rocksdb能提供WAF，RAF，SAF之间灵活的平衡；
-- 多线程compact，适合单库大数据
 
 ## github wiki
 
@@ -262,6 +260,7 @@ Next: 取出当前minheap top（就是返回值），然后top.Next()，再把to
 - 作者看好flash存储的发展，并且为该类存储定义了WAF，RAF,SAF
 
 所以，rocksdb的一些设计初衷：
+
 1. An embedded key-value store with point lookups and range scans
 2. Optimized for fast storage, e.g. Flash and RAM
 3. Server Side database with full production support
@@ -269,6 +268,7 @@ Next: 取出当前minheap top（就是返回值），然后top.Next()，再把to
 5. 作者在大约2013年底的时候完成了主要功能
 
 RocksDB is not a distributed database. It does not have fault-tolerance or replication built into it. It does not know anything about data-sharding. It is upto the application that is using RocksDB to implement replication, fault-tolerance and sharding if needed.
+
 ### overview
 
 - 支持get，put，delete, scan
@@ -311,21 +311,13 @@ RocksDB is not a distributed database. It does not have fault-tolerance or repli
 
 ### basic operations
 
-- fdatasync比fsync快
+- Put, Delete, Get, Merge
+- WriteBatch Write
 - DB, put, get, getIt线程安全，但是writebatch以及iterate非线程安全
 
 
-
---------------------------------------------------
-
-基本操作：
-- Put, Delete, Get
-- WriteBatch Write
-- MergeOperator read-modify-write merge给出了一种自定义incremental updates的方法
-
-
--------------------------------------------------
-代码研读：
+代码研读
+---
 
 - 基础结构：主要的类，以及类uml关系，文件组成，组件组成
 
@@ -445,8 +437,6 @@ memtable write可以在put或者prepare phase，
 
 费了这么多的设计，benchmark结果显示提高性能%3，%7，而且牺牲了隔离级别，真的很不值。
 
-
-
 -------------------
 关于rocksdb使用的一些c++高级特性的理解：
 
@@ -460,131 +450,16 @@ memtable write可以在put或者prepare phase，
 最重要的是：Impl override的Open函数，new出来的是Impl的实例，因此才能应用重写的函数。
 
 
--------------------
 # rocksdb阅读
 
 ## c bindings
+
 - Static函数绑定最直接，成员函数绑定第一个参数为Object，override通过函数指针，overload通过不同函数名
 
 暴露出的概念：db, backup_engine, checkpoint, column family, iterator, snapshot, compact
               writebatch, writebatch_index,  block_based_option, cucoo, options, bulkload,
               ratelimiter, comparator, filterpolicy, MergeOperator, sync/flush, cache, env
               sst, slicetransform, universal/fifo/level compaction, transaction
-
-
-## db
-
-- db线程安全
-- level0 stop write?
-- flush?
-- 组成部分：table_cache, memtables, directories(db, data,wal), write_buffer_manager, 
-    write_thread, write_controller, rate_limiter, flush_scheduler, snapshots, pending_outputs?,
-    flush_queue_, compaction_queue_, purge_queue_, mannual_compaction_queue, wal_manager,
-    event_logger_, super_version_?, versions_, db_name_, env_, db_options(initial, mutable, immutable)
-    stats_, recovered_transactions_, 
-
-## 具体分析
-
-
-options {
-    db_options {
-        immutable_options
-        immutable_options
-    }
-    cf_options;
-}
-
-从put和get分析
-
-WriteBatch::Put：
-1. savepoint s(b)
-2. b.count++
-3. b->rep_构造
-4. 设置content_flag |= HAVE_PUT
-5. s.commit()
-
-6. LocalSavePoint: ?
-
-
-DBImpl::Write
-
-- pipelined?
-
-1. Write w;
-2. write_thread_.JoinBatchGroup
-    - oldest_writer为group leader
-    - 多线程LinkOne采用了atomic::compare_and_exchange指令，避免使用锁
-    - WriteThread::Writer
-
-2.1 as leader
-    - PreProcessWrite [处理wal，writebuffer满等先决条件]
-    - EnterAsGroupLeader [形成writ_group，也就是得到(newest oldest]]
-    - WriteWAL  [为什么需要多个logs_? 大约就是tmp_batch_.Append, log_writer_.AddRecord, Sync]
-    - InsertInto [如果没有什么高级操作（inplace_update）那么，insertinto就是memtable-Add]
-    - MarkLogsSynced
-    - CompleteParallelMemTableWriter
-    - ExitAsBatchGroupLeader
-
-
-
-
-
-3. 根据不同的state进行写入
-    - STATE_PARALLEL_MEMTABLE_WRITER 
-    - STATE_COMPLETE
-    - STATE_GROUP_LEADER
-
-
-对rocksdb的分析确认了之前关于硬盘读写的认知：
-- 多线程对磁盘写并不会有任何帮助
-- 
-
-二手资料显示：
-single writer模式：所有的writer排队，只有队列头的writer可写（其他writer等待）。
-
-
-关于memtable:
-Add: 与map.add的语义类似
-
-
-
-
-
-
-关于atomic的memory order的理解：
-
-compare_and_exchage
-load and store
-cond_var
-
----------------------------------
-memory order
-卧槽，太复杂
-
-
----------------------------------
-
-1. JoinBatchGroup
-- 多线程writer合并为single writer
-- leader执行写，follower都看着
-
-
-2. PreProcessWrite
-- handle wal full: flush oldest cf
-- handle writebuffer full: flush largest cf
-
-3. EnterAsGroupLeader
-- 准备write group(aka tmp_batch_)
-
-4. WriteToWAL
-- 写WAL
-
-5. InsertInto
-- 写memtable
-
-6. 退出清理
-- ?
-
 
 
 

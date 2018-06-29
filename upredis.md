@@ -6,11 +6,9 @@
 
 - upredis-1.2.0 没有编译12sp1，导致1.3.0,1.4.0都没有12sp1的介质
 
-
-
 # upredis-2.0
 
-# 协议
+## 协议
 
 ```
 #发起psync
@@ -36,9 +34,9 @@ replconf ack-opid <next_opid>
 
 
 
-# replication
+## replication
 
-## 数据
+### 数据
 
 server.master.flags.REDIS_AOF_PSYNCING
 server.do_aof_psync_send
@@ -64,7 +62,7 @@ server.master.reploff # 保存了master的实时复制offset
 
 server.cached_master # 主从之间断链，则把master链接缓存到cached_master，并将server.repl_state设置CONNECT（发起重连）；重连过程中优先使用cached_master进行PSYNC；如果PSYNC成功，则复活cached_master；否则抛弃cached_master，通知下线重新同步；
 
-## 问题
+### 问题
 
 // TODO 为什么feed slaves不需要del_type ？ 
 因为复制流不需要区分del_type，这应该有错误的！
@@ -72,7 +70,7 @@ server.cached_master # 主从之间断链，则把master链接缓存到cached_ma
 
 //TODO fullresync完成之后需不需要startBGSaveForFullResync()??? 首先FULLRESYNC过程中的rdb文件呢？这个过程会不会出发save？
 
-## 碎碎念
+### 碎碎念
 
 - 进入了aof-psync状态后： c->flags |= REDIS_AOF_PSYNCING;
 - master进入aof-psync时，会将添加syncreploffset <server.master_repl_offset>
@@ -87,17 +85,17 @@ server.cached_master # 主从之间断链，则把master链接缓存到cached_ma
 - feedslaves居然是用的是shared.oplogheader, shared.opinfo；master给slave发送的opinfo是未解之谜！！!难道发送给slave只是一个占位符？？？？？？？
 - 擦擦擦，刚刚发现apsaracache居然没有aof-binlog就玩不转了！不过策略还是先采用apsara的策略，最后优化修改。
 
-## 测试案例
+### 测试案例
 
 1. 测试slave全量同步时，sub-slaves的情况！
 2. 因为有多个地方使用了4k的占内存，测试在比较小的占内存情况下，会不会崩溃
 3. 测试PREPSYNC场景
 4. 因为AOF文件可能头和尾都有opinfo命令，因此需要考虑和测试不同场景是否会有问题！
 
-# AOF
+## AOF
 
 
-## 数据结构
+### 数据结构
 
 server.master.lastcmd
 server.last_aof_open_status
@@ -109,21 +107,21 @@ server.aof_select_db
 
 server.aof_psync_cur_reading_name
 
-## 命令
+### 命令
 
 aofflush
 purgeaofto <aof_filename>
 
-## 配置
+### 配置
 
 auto-purge-aof
 auto-cron-bgsave
 
-## split
+### split
 
 role变动，aofflush命令，aof文件大小超限，rdbSaveBackground
 
-## purge
+### purge
 
 - aof-inc.index超过1M*80%：尽量删除aof文件；
 - aof总量超过max-keeping(2*max-memory||5G)：只留5G
@@ -138,20 +136,17 @@ role变动，aofflush命令，aof文件大小超限，rdbSaveBackground
  delAofIfNeeded可能会出现当前rdb与一个很老的aof文件对应，但是中间又生成了很多空的aof文件
  造成aof-inc.index文件超过限制：：：能不能避免产生空aof文件！！
 
-## cron
+### cron
 
 - 每30s，deleteAofIfNeeded
 - 每HZ，查看当前文件是否超过大小限制，如果超过限制，则发起aofSpilt
 
-## write&flush
+### write&flush
 
 - aof的常规fsync（everysecond，always）逻辑不变
 - aof bio fsync，将fsync任务发送给bio线程:aofQueueHandleAppendOnlyFlush
 
-
-
-
-## 问题
+### 问题
 
 // TODO when stop aof ? why? 
 stopAppendOnly
@@ -165,38 +160,38 @@ startAppendOnly
 场景：config set appendonly yes；fullresync开启aof新纪元
 NOTE: 写是有判断的
 
-## 碎碎念
+### 碎碎念
 
-## 测试案例
+### 测试案例
 
 
-# aof_buf_queue
+## aof_buf_queue
 
 新增bio sync处理appenonly的aof_buf写请求
 
-## 数据结构
+### 数据结构
 
 server.aof_buf_limit
 server.aof_current_size
 server.aof_total_size
 server.aof_inc_from_last_cron_bgsave
 
-## 配置
+### 配置
 
-## 问题
+### 问题
 
-## 碎碎念
+### 碎碎念
 
 - 如果force，那么不进行流控（然而force只在bio-->其他时触发）
 
-## 测试案例
+### 测试案例
 
 
-# RDB
+## RDB
 
-## 数据结构
+### 数据结构
 
-## 问题
+### 问题
 
 // TODO WTF is auto sync for incr fsync ??
 每32M fsync一次RDB
@@ -214,17 +209,17 @@ auto-cron-bgsave:
 cronBgsave触发
 
 
-## 碎碎念
+### 碎碎念
 
 - 每次rdbsave都会先split一把
 
-## 测试案例
+### 测试案例
 
 
 
 
 
-# 问题
+## 问题
 
 master，slave的offset如何保持一致，特别实在master需要向slave发送DEL(by expire)，PING，REPLCONF命令时保持一致！
 - 第一个是为什么psync可以保证？
@@ -235,435 +230,11 @@ master，slave的offset如何保持一致，特别实在master需要向slave发�
 
 
 
-# 测试
+## 测试
 
 - 出现了aof-index含有重名aof文件
 - 如果svr，slv启动在同一个文件夹？
-
 - redis-1.2 作为slave挂在redis-2.0上出现coredump
-
-目前已解决，Apsara也有这个问题！
-
-
-
-- slave opid信息显示不正确！
-
-
-
-
---------------------
-- 为啥createbacklog时自增1，slave能知道offset是多少，也就是说fullsync的init offset是怎么告知的？
-开始的offset, +FULLRESYNC <runid> <offset>
-只要没有slave，则master_repl_offset为0；创建backlog，master_repl_offset++；feedReplicationBacklog时reploffset+=len
-create/resize backlog时，repl_backlog_off = master_repl_offset+1
-
-- 为啥aof-psync需要syncreploffset?
-因为没有通过+fullresync拿到offset，但是aofcontinue了；这样的话下次想psync还得不到正确结果。
-
-- 为什么syncreploffset使用的是dosendaof完成的master_repl_offset，而不是aofcontinue时的master_repl_offset?
-
-从aofcontinue到dosendaof完成，master_repl_offset是会增加的；但是因为aof文件同步增加，并且aofcontinue之后的命令会不会发送给slave client
-
-- psync,aof-psync,sync的优先级？
-
-psync > aof-psync > sync
-
--------------------
-以下问题：
-
-- 迁移问题
-- 兼容性问题
-- 为什么会有如此多的空aof文件
-- monitor问题
-- sub-slaves的考量
-- 测试问题, tcl脚本！
-
-
------------------
-测试案例：
-
-多个slave同时进行aofpsync
-
-查找find_offset_by_opid出错，导致forcefullresync
-
-模拟全渠道的案例进行测试。
-怎么考虑aof，rdb的兼容性问题
-复制gap怎么处理，能否使用时间戳处理99%的数据冲突
-
-multi/lua/expire/replication/aof/scriptcache/monitor/pubsub/keyspace
-
-bug怎么处理？
-
------------------
-bring it together
-
-关于复制：
-
-- 为什么aofpsync之后需要forceresyncoffset(而不是aofcontinue runid offset)？aofpsync怎么完成的，psync怎么完成的?
-- 在master在进行psync时，subslaves是否能psync？fullresync呢？
-- backlog怎么切换，backlog的产生和消失时机？offset的增加时机？
-
-关于lua：
-
-- 怎么优化lua的evalsha在aof中的存储命令?lua script cache在什么情况下需要flush
-
-关于expire：
-
-- 什么时候expire？maxmemory？
-
-
-----------------
-server.aof_psync_slave_offset全局唯一，说明同时只能有一个slave进行aofpsync，那么是怎么保证的呢？
-通过server.do_aof_psync_send标志标记该状态
-preamble? slave.repldbfd, slave.repldboff, slave.repldbsize??
-
-
-----------------
-什么是debug digest，所有db数据的摘要。
-debug loadaof
-由于server.aof_filename目前
-
--------------------
-aof-->aof-binlog
-
-- bgrewriteaof将当前数据全量保存为appendonly (Point-In-Time)
-- aof仅用于保存PIT数据，因此aofrwbufblocks不在使用
-- rdb仅用于保存PIT数据。
-
-
-auto-cron-bgsave:
-
-
-save directive 与 auto-cron-bgsave怎么相互影响？
-
-如果
-
-appendonly no时, 开始bgsave; 同时config set appendonly yes;
-然后开始大量写入，触发auto-cron-bgsave（此时的rdb.index与dump.rdb文件怎样？)；
-
-同理，在auto-cron-bgsave进行的期间；config set appendonly no;
-最后生成的（rdb.index文件怎样？）
-
-看起来核心是rdb.index文件怎么生成的？
-rdb.index由rdbSave函数生成，该函数可能save或者bgsave调用的，
-无论哪种情况，都是rdb.index根据调用时的server.appendonly设置来生成。
-rdb.index与dump.rdb绑定，都在rdbSave函数中生成。
-
-save开启关闭:
-- save开启关闭只修改saveparam，而触发只在serverCron中。
-
-appendonly开启关闭：
-- 开启只是open，并对相关的状态赋值
-- doStopAof 后台flush/关闭文件
-
-rdb.index文件时rdb和aof的粘合剂，但是rdb.index的产生、使用时间不一致，所以...
-
-
-
-没开启aof:
-<dbfilename>
-
-开启了aof：
-<dbfilename> <aof-inc> <aof-current-size> <next-opid>\n
-<ssid> <applied-opid> <ssid> <applied-opid> ... <ssid> <applied-opid>\n
-
-rdb.index什么时候消费??
-doPurgeAof
-loadOplogFromAppendOnlyFile
-loadDataFromRdbAndAof
-loadDataFromRdb
-
-如果没有aof.index，则无法加载内容。
-
-怎样清除当前server的oplog,applied_info等状态？
-
---------------------
-测试案例：
-
-- replication-psync
-
-0. 启动master/slave
-1. 按照确定参数设置 repl-diskless & repl-backlog 参数
-2. 启动三个Write压力进程
-
-> 建立复制关系
-> 确认压力进程正在进行Write压力
-> 测试psync:
-    执行断链：如果reconnect==1，则在duration时间段之内，2s一次断掉与master之间的链路(multi;client kill <master host:port>; debug sleep delay;exec)
-    确认数据一致：停止Write压力；按照1s/次,轮询10次，确认复制数据主从一致（debug digest)；
-    执行cond检测
-
-----------------------
-
-
-aof的操作
-
-start(open) : 打开aof_fd, 修改aof-inc.index,设置aof_state
-stop: flush, bio close, 修改aof_state
-split: stop, start, del
-flush: 如果everysecond && no force && sync_in_progress，则放弃flush；write, 处理write error和short write；aof_fsync(fdatasync) 或者 aof_background_fsync(bio fsync)
-del  : aof.index超过0.8M，触发疯狂purge，recheck 触发rdbSaveBackground（因为rdb.index可能对应很早的aof）；aof总量 > aof-keep(maxmem*2 或者 5G), purge to keepsize
-purge: 考虑rdb.index, aof.index, server.aof_filename, aof-psync, opget clients, 创建bio purge任务。重新生成aof.index
-purge-cron: 每30s del
-split-cron: 每Hz 如果超过aof-max-size则split
-
-
-相关操作：
-rdbSaveBackground：
-
-为啥有很多空的aof文件，能不能没有？ 
-目前应该就是除了最后一个aof，没有空的aof文件;
-
-如果1s之内产生了split了多次，会不会造成什么问题？
-会造成同一个aof文件在同一时间打开超过一次，但由于write是不存在重叠的，因此也不会有什么问题！
-
-aof max keeping size 可以配置。
-
-如何在config set appendonly yes后触发bgsave
-
-----------------------
-rdb的操作
-
-load
-save
-bgsave
-
-为啥rdbSaveBackground可以在不判断aof开启的情况下prepareSave(flush, aofSplit)？
-
----------
-从redis的代码上看，如果磁盘空间不足，会造成short write， errno = ENOSPC;这种情况最好ftruncate回退partial write。
-atoi是一个很不好的函数，虽然用起来方便，但是无法检测是否真的符合数字规范，下面是参考：
-char *endptr = NULL;
-long pos = strtol(aof_position, &endptr, 10);
-if(pos < 0 || *endptr != '\0' || errno == ERANGE) {
-
-flush之后，close还需要异步吗？
----------------
-
-
-::servers
-[srv:{
-    client,
-    config_file,
-    pid,
-    host,
-    port,
-    stdout,
-    stderr,
-    config:{
-        dir,
-        bind
-        port
-        ...
-        directive : arg
-    }
-    skipleaks
-}]
-
----------------
-psync 发起的opid是从哪里获取的？
-server.next_opid
-
-master和slave的opid怎么同步的？还是说各自维护各自的opid？
-不管是aof还是replication，next_opid以opinfo命令为准。
-
-如果slave没有开启aof，那么还能aof-psync么？opid又是从哪里获取的？
-master会发送opinfo命令给slave，因此可以的！
-
-
-如果master没有开启aof，那么还能接受aof-psync么？
-
-
-为什么offset和opid需要分别维护，两者之间的相互作用是怎样的？
-因为offset是master-->slave的流量记录，没有slave的情况下是不会记录的！
-opid是aof模式的操作记录，另外opinfo是在cmd之后发出的！
-
-server.next_opid重启怎么保存，purge了的怎么办，手动删除会怎样？
-
-
-opapply会不会增加server.next_opid? 如果不增加那么在aof文件中怎么保存？在replication中怎么获取连续的oplog？复制难道只复制同一个serverid的？
-
-
-appendonly yes->no->yes 这三个过程之后，server.next_opid怎么处理？是不是no的时候opid不增长？
-卧槽，真的是这样的! 如果appendonly 为no，next_opid不增长。
-
-oh nonono, 所以说config set appendonly no是一个非常危险的操作，会丢掉oplog。
-
-配置文件里的appendfilename还有什么意义？
-
-启动slave时，aof文件中的历史重要还是psync/fullsync结果重要？
-
-分析场景：
-master 关闭aof 无slave:
-master 关闭aof 有slave
-master 开启aof 无slave
-master 开启aof 有slave
-
-测试到了一个bug，复现步骤：
-1. 启动master，启动aof，插入若干个数据
-2. 启动slave，插入若干数据
-3. 从info replication看出nextopid有问题。
-
-redis-cli将结果重定向到文件不可行！因为redis-cli会修改结果。
-
-配置里面的server-id与aof的server-id不一致会导致aof加载出问题吗？
-
-ignored cmd会不会在monitor中出现？
-
-
-
-
-|checkAndFeedSlaveWithOplogHeader #如果AOF_OFF也不会添加opinfo
-|checkAndFeedAofWithOplogHeader 
-    feedSlavesOrAofWithOplogHeader 
-        如果复制 replicationFeedSlaves
-        如果aof  
-            initOplogHeader
-            feedAppendOnlyFile
-
-
-feedslaves不需要header？
-
-opget, opapply, A->B->C，这种情况src_opid会变吗？
-是会变的！！需要测试确认！！这样的话只能支持双中心！
-需要fix
-
-为什么作为2.0作为slave挂在1.0上不能形成一个有效的2.0master（aof文件格式不对！)
-
---------------------------
-
-lpush 
-
-aof 不开启，master无法正确过滤opid。next_opid没有正确过滤
-
-opinfo 会不会放入到backlog中？
-
-
-------------------------
-
-如果app写slave，那么slave的next_opid将会陷入混乱！（其实复制也是一样的问题，复制怎么解决）
-
-
-
-----------------
-
-问题是：
-
-- 由于不同中心的延时，bls无法保证时序，因此数据没有确定结果，那么upsql的情况呢？（与不同链接的时序无法保证类似）
-
----------------
-
-分析测试failover造成的gap会不会影响数据转移
-
---------------
-
-妈蛋，终于看懂了redis.tcl
-
-API:
-
-r blocking <0|1>
-r reconnect 
-r read 
-r write
-r flush
-r channel
-r deferred
-r close 
-r <others> 
-
-实现：
-
-dispatch_raw区分预定义命令与redis协议命令（others）不同的方法__method__xx
-对于redis协议命令：
-
-调用逻辑：
-
-fileevent <fd> readable {<script> <fd> <args...>}
-表示fd在出现读事件时会调用 {<script>..}
-
----blocking
-1. 拼resp协议,发送
-2. 同步读取回复
-
----nonblocking
-1. 拼resp协议,同步发送
-
-
-gets也是一个比较有意思的函数：不管在blocking还是non-blocking的fd都可以使用
-如果nonblocking fd暂时没有一整行，gets将返回{}，但是不会获取部分结果。
-
-
-redis::callback(id)是一个callback fifo
-redis::state(id):  用于保存解析状态
-{
-    mbulk,
-    bulk,
-    buf,
-}
-
-readable:
-    redis_reaable
-        redis_call_callback {id type reply}
-            uplevel #0 $cb redisHandle$id $type $reply
-            redis_reset_state
-
-
-type:enum {
-    eof     : eof
-    reply   : 收到一个完整的回复，通知callback进行分析
-    err     ：收到错误回复
-}
-
-同步收到的是list of lists
-已补收到的是list of string
-
-
-回调函数原型：
-proc xxxx {r type reply}
-
-
-理解这行很重要：
-interp alias {} ::redis::redisHandle$id {} ::redis::__dispatch__ $id
-
-以上语句返回了一个函数别名，每次再用这个函数别名调用时，直接采用了dispatch函数调用，实现了类似对象的概念。
-
-
-果然是tcl高手啊，300行实现了这么多！
-
--------------------------
-
-server-id appendonly 这种对于数据的安全性异常重要的选项考虑不能动态修改，并且考虑动态修改可能或造成的问题。
-
---------------------------------
-
-关于超时的过滤，因为超时可以在各中心独立进行，因此也没有必要同步DEL_BY_EXPIRE的命令（全渠道大量会有定时超时需求）
-
-目前关于超时的类型，通过cmd_flag区分（共4bit），当前cmd_flag也仅用于表示DEL_TYPE。
-
-可以考虑moray实现，或者redis内核实现。
-
-考虑redis内核实现，增加过滤条件：skipexpire, skipeviction
-
-matchflags delbyexpire|delbyeviction|delbyclient|all
-
-关于更加复杂的语义解析相关的问题，以后扩展，目前仅支持 |
-
-(!delbyexpire)&
-
-为什么flags是链路级别的？什么时候设置的？
-
------------------------------
-
-robj->ptr???
-
------------------
-关于oprestore的作用：
-
-oprestore能够在保持master数据不变的情况下，重新propagate restore*foo*replace命令，可以用于缺失aof-binlog的情况下恢复某个key。
-这个接口留着，运维的时候可能会用到。
-
-
-
 
 # upredis-api-c
 
@@ -1284,11 +855,11 @@ java的非阻塞编程与C的模型一样；但是Jedis本身并不支持，所�
 
 
 
-#upredis-proxy
+# upredis-proxy
 
-# 主体设计
+## 主体设计
 
-## 事件库：
+### 事件库：
 - 处理顺序为ERR>READ>WRITE所以会出现：
 1）redis断链之后，执行的是core_err->core_close->server_close；
 2）如果有一个大的pipeline，proxy可能会一致读取，导致无法及时将请求发送到redis（大pipeline超时）
@@ -1308,9 +879,9 @@ c) handle_accumulated_signal
 d) core_timeout
 e) core_before_sleep
 
-## 消息
+### 消息
 
-### 解析
+#### 解析
 
 - 解析过程的复杂性在于msg分散到多个事件循环读取，msg分散到多个mbuf存储，一次读取的数据量可能包含X.Y个msg
 - `conn->rmsg`用于保存正在读取、解析的msg（考虑msg分到两个事件循环读取）
@@ -1352,7 +923,7 @@ conn->recv_done # msg 读取解析完成的后续动作
 1) 过滤： quit-在client所有reply收到后关闭连接，auth之前命令不forward，ping命令不forward，管理命令直接回复客户端不支持
 2) forward：如果不需要forward，直接回复客户端；如果需要forward，则路由到指定的svr
 
-## 异常处理
+### 异常处理
 
 几个标记的说明
 
@@ -2137,9 +1708,6 @@ req_done的标准：
 什么时候submsg会被free掉，并且不会被发送到客户端链接中:
 
 
-
-
-
 # upredis-rocksdb
 
 upredis冷热分离项目
@@ -2150,72 +1718,43 @@ upredis冷热分离项目
 
 ## 时间计划
 
+20180625-20180810 编码开发
 
-## 
+0626-0704 ds编码，超时，测试
+0704-0713 Db & Generic命令编码
+0704-0713 复制优化编码（考虑引入psync2!），测试
+0715-0801 内部覆盖率、性能、内存泄露测试
 
-# redis-rocksdb
+20180901-20180928 项目发布与测试
 
+## 概要设计
 
-## 基本理念
+- 通过对rocksdb的kv编码，适配redis的数据结构
+- 使用rocksdb WAL实现FULLRESYNC，PSYNC机制 
+- 不能动态修改rocksdb_open选项，因为开启rocksdb之后，关闭了string obj encoding
 
-GET:
-got = get (k v) from redis
-if (got) return v;
-else return get (k v) from rocksdb;
+## 编译
 
-SET:
-set (k v) in redis
-set (k v) in rocksdb
+### uprocks
 
+uprocks有静态和动态编译方法。
 
-## 总体设计
+### redis
 
-- 能不能直接使用nemo引擎？或者我们实现一个类似于nemo的引擎？
+redis使用deps下面的libuprocks.a
 
-
-## redis-rocksdb-list
-
-
-### list commands
-
-BLPOP key [key ...] timeout
-BRPOP key [key ...] timeout
-BRPOPLPUSH source destination timeout
-LINDEX key index
-LINSERT key BEFORE|AFTER pivot value
-LLEN key
-LPOP key
-LPUSH key value [value ...]
-LPUSHX key value
-LRANGE key start stop
-LREM key count value
-LSET key index value
-LTRIM key start stop
-RPOP key
-RPOPLPUSH source destination
-RPUSH key value [value ...]
-RPUSHX key value
-
-### 有关ttl的命令
-
-expire key ttl
-expireat key timestamp
-
-### list相关命令执行流程
-
-
-
-# 关于ttl功能
+## db-keyttl
 
 由于redis中有控制每一个key的ttl的需求，而rocksdb没有提供该功能，并且该部分功能
 属于数据结构中的公共部分，因此参考nemo-rocksdb在rocksdb之上，添加ttl功能。
 
 涉及需求：
+
 - 提供db->put(options, k, v, ttl)接口
 - compactionr-filter自动过滤过期kv
 - iterator自动跳过过期kv
 
-## redis ttl相关命令
+### redis ttl相关命令
 
 [key]
 expire key seconds
@@ -2230,11 +1769,11 @@ pttl key
 set key value [EX seconds] [PX milliseconds] [NX|XX]
 setex key seconds value
 
-## 相关工作
+### 相关工作
 
 相关的工作包括rocksdb的DBWithTTL类和nemo-rocksdb的DBNemo类。
 
-### rocksdb DBWithTTL
+#### rocksdb DBWithTTL
 
 rocksdb提供了DBWithTTL，该类Open时传入ttl参数，也就是所有的key共享一个ttl。
 明显地，该类的功能不能满足redis ttl的需求；
@@ -2243,7 +1782,7 @@ rocksdb提供了DBWithTTL，该类Open时传入ttl参数，也就是所有的key
 实现ttl功能涉及的compaction-filter、merge、iterator有比较重要的指导作用，
 可以看出nemo-rocksdb也是参考了DBWithTTL类进行了定制开发。
 
-### nemo-rocksdb DBNemo
+#### nemo-rocksdb DBNemo
 
 DBNemo实现了kv级别ttl功能，主要的设计思路是：将每个kv（无论是否有ttl属性）都
 append (version, timestamp)。其中version用于推迟删除到compaction（删除
@@ -2256,9 +1795,9 @@ list/hash时version++，如果list/hash的节点version小于当前version则说
 
 综上：以上两种实现都不能很好地满足redis持久化需要用到的kv级别ttl功能。
 
-## 总体设计
+### 总体设计
 
-### 存储结构
+#### 存储结构
 
 示意图如下：
 
@@ -2306,13 +1845,13 @@ DBWithKeyTtl层：
 - flag      : 附属标志（目前只用于标记是否有timestamp域）
 - timestamp : 超时timestamp，可选域（如果没有timestamp，表示不超时）
 
-### 项目组织
+#### 项目组织
 
 DBWithKeyTtl层的实现的备选方案：
 - c++方案: c++编写，独立项目（与nemo-rocksdb类似）
 -   c方案：c编写，redis子模块
 
-#### c++方案
+##### c++方案
 
 参考nemo-rocksdb，使用c++编写，单独创建项目db-keyttl。使用c++的多态特性，
 override rocksdb::StackableDB中的相关接口，定制ttl功能。
@@ -2327,7 +1866,7 @@ override rocksdb::StackableDB中的相关接口，定制ttl功能。
 - 需要参考rocksdb将db-keyttl的类bind为c语言接口
 
 
-#### c方案
+##### c方案
 
 使用c编写，作为子模块放在redis源码项目中。使用c语言的函数指针override相关的
 virtual函数，定制ttl功能。
@@ -2341,12 +1880,12 @@ virtual函数，定制ttl功能。
 - 将c++的特性对应到c实现，可能会有不方便的地方
 
 
-## 详细设计
+### 详细设计
 
 超时功能虽小，但是涉及到了compation-filter、merge-operator、iterator等相关
 功能，以下逐一分解。
 
-### compaction-filter
+#### compaction-filter
 
 kv超时之后，需要compation时自动过滤，从而降低磁盘占用。
 
@@ -2371,7 +1910,7 @@ rocksdb通过ColumnFamilyOptions/Options持有CompactionFilter实例，从而持
 另外为了支持用户自定义Filter策略，KeyTtlCompactionFilter应该先执行用户通过
 options传入的user compaction filter，然后再执行ttl相关的Filter策略。
 
-### iterator
+#### iterator
 
 迭代器在以下场景可能遇到过期kv：
 - iterator创建时kv已过期但尚未执行compaction
@@ -2395,7 +1934,7 @@ KeyTtlIterator通过继承Iterator并override Valid/SeekToFirst/SeekToLast等函
 KeyTtlIterator实例，从而使得db持有Iterator。
 
 
-### merge-operator
+#### merge-operator
 
 merge是rocksdb抽象出来的一种read-modify-write的操作。merge与put，get，delete
 一样是rocksdb支持的基本的操作类型。
@@ -2403,44 +1942,114 @@ merge是rocksdb抽象出来的一种read-modify-write的操作。merge与put，g
 merge操作类似于update操作，特殊的是merge的update操作可以通过继承MergeOperator
 并override FullMergeV2来自定义merge操作。
 
+```
 如果把merge operator表示为'*'， kv表示为'(k,v)'，merge结果表示为(k,v_new)，则
 (kv)连续与m1,m2,m3 merge过程可以表示为：
-```
 (k,v_new) = (k,v)*m1*m2*m3
 ```
+
 因此如果merge操作满足结合律(associativity)，那么可以通过PartialMerge进行优化，
 更加详细的资料参考：
+
 - [merge operator](https://github.com/facebook/rocksdb/wiki/Merge-Operator)
 - [merge operator implementation](https://github.com/facebook/rocksdb/wiki/Merge-Operator-Implementation)
 
-----------------------------
+## WAL复制
 
-由于merge是rocksdb支持的基本操作，毋庸置疑merge操作需要得到支持；由于ttl层对
-用户透明，因此KeyTtlMergeOperator需要完成redis层到rocksdb层的中转。具体包括：
-- 用户merge操作的operands应该Strip掉timestamp和flag 
-- 用户merge的超时时间与existing_value一致
+### 思路
 
+- slave必须readonly（fullresync会覆盖掉slave write）
+- master-slave分别超时（因为DEL会导致master-slave sn不一致），因此master-slave的时间必须同步（精度高于复制延迟ms级别）
 
+### propagate
 
--------------------------- 华丽的分割线 --------------------------
+propagate的特殊考虑场景：
 
-TODO
+- expire-->DEL slave +sn 需要修改当前master-slave的expire机制
+- lua replication 1(N)--1(N) 不影响
+- spop --> srem 1--1 不影响
 
-- review
-    - ttl的精度问题
-    x 关于env的设计逻辑是什么？为什么要把env传来传去？
-    x- 整理static函数
-    x WriteWithOldKeyTtl
-    x 为什么string和slice混合使用？
+小结，只需要修改expire机制，可以继续使用redis原先的propagate机制
 
 
-
-- test
-- performance
+### 评审的问题
 
 
+### 参考
+
+[基于WAL复制](http://172.20.51.159/cdb/%E5%9F%BA%E4%BA%8EWAL%E5%A4%8D%E5%88%B6)
 
 
+## 数据存储
+
+### 参考
+
+[引擎数据存储格式设计](http://172.20.51.159/cdb/rocksdb%E6%95%B0%E6%8D%AE%E5%AD%98%E5%82%A8%E6%A0%BC%E5%BC%8F%E8%AE%BE%E8%AE%A1)
+
+## lua与事务
+
+lua提供原子性保证，在redis单线程模型下，并发请求被序列化WAL中,因此使用rocksdb的
+复制类似于effect replication。类似地，multi/exec/watch的事务控制基本上被redis层
+实现，到真正执行时是被序列化到WAL。
+
+因此在不考虑异地的情况下，我们没有必要特殊考虑lua、事务不需要特殊考虑。
+
+## 代码组织
+
+- `r_*`文件中的`rocksdb_*`表示对rks的数据操作包装，
+- 先写rds，再写rks
+- server.dirty用于判断是否需要propagate；相应地evict操作也不能propagate；expire也不需要propagate
+
+## 数据结构
+
+### set
+
+- set接受nil member
+- encoding是否为intset，不依赖于`key->encoding`，通过isObjectRepresentableAsLongLong判断
+- set的key一定是string.raw；value可能是string.raw或者string.int
 
 
+## TODO
 
+- 代码组织
+`t->{rks->rocksdb, rds}`
+哪个地方commit，rks和rds之间混合在一起了！
+
+- 数据结构相关
+支持string encode
+rks使用的数据结构为sds
+支持encodebuf的回退
+
+- 超时相关
+注意evict不能propagate！
+
+- 性能相关
+- 复制相关
+
+复制记得不能和主线程share object！
+
+
+- 其他
+debug reload命令
+`keys *`输出结果不正确
+考虑`c->cf`来支持多个db
+
+### 测试案例
+
+- 测试案例包括二进制数据 "hello\0world"，有些参数被当成了`char*`
+
+### 问题
+
+为什么要先写rks，再写rds？
+先写rds，再写rks: 如果rds写入成功，再写rks失败，reply失败；则rds比rks数据多，会造成数据不一致
+先写rks，再写rds：如果rks写入成功，再写rks失败，reply失败；则rks比rds数据多，也会造成数据不一致
+
+但是先写rds如果写入不成功的话，rds会直接assert退出，因此不会有数据不一致；
+因此实际上可以先写rds，再写rks。
+
+hashtable能不能混用string.int和string.raw
+
+
+### checklist
+
+- 为了测试，变异参数变成了-g -O0，发布时记得改回来

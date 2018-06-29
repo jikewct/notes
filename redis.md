@@ -182,12 +182,13 @@ NULL，但是实际上不会对keyspace做修改。
 
 ## 数据结构
 
-- EMBSTR 为了减少sds头占用的内存，对于44B之内的String新增EMBSTR编码
-- quicklist
+### object
 
-### list
+可以理解为高级语言的对象，通过引用计数管理内存。
 
-三种encoding。
+- 注意如果希望保持某一个obj，那么需要将其引用计数保持在0以上
+
+### encodings
 
 #### ziplist
 
@@ -204,8 +205,83 @@ NULL，但是实际上不会对keyspace做修改。
 
 [Quicklist Final](https://matt.sh/redis-quicklist-visions)
 
+#### intset
 
-### hyperloglog
+```
+typedef struct intset {
+    uint32_t encoding;
+    uint32_t length;
+    int8_t contents[];
+} intset;
+```
+
+- intset的overhead为8B
+- 包括16,32,64bit 3种encoding，整个intset统一
+- encoding, length按照le字节序存储
+- intset按照升序排列（tricy：造成升级的value总是在head或者tail）
+- `set-max-intset-entries`控制intset的element数量，默认512
+
+#### hashtable
+
+```
+typedef struct dictType {
+    uint64_t (*hashFunction)(const void *key);
+    void *(*keyDup)(void *privdata, const void *key);
+    void *(*valDup)(void *privdata, const void *obj);
+    int (*keyCompare)(void *privdata, const void *key1, const void *key2);
+    void (*keyDestructor)(void *privdata, void *key);
+    void (*valDestructor)(void *privdata, void *obj);
+} dictType;
+
+typedef struct dictEntry {
+    void *key;
+    union {
+        void *val;
+        uint64_t u64;
+        int64_t s64;
+        double d;
+    } v;
+    struct dictEntry *next;
+} dictEntry;
+
+typedef struct dictht {
+    dictEntry **table;
+    unsigned long size;
+    unsigned long sizemask;
+    unsigned long used;
+} dictht;
+
+typedef struct dict {
+    dictType *type;
+    void *privdata;
+    dictht ht[2];
+    long rehashidx; /* rehashing not in progress if rehashidx == -1 */
+    unsigned long iterators; /* number of iterators currently running */
+} dict;
+```
+
+- hashtable overhead 为`96B+nelementx8`
+- dictAdd添加的key在ht中必须不存在，dictReplace是如果存在则replace
+- dictEntry接口：Dup, Compare, Destructor
+- hashtable对每一种哈希都有不同的配置
+
+### types
+
+#### string
+
+- EMBSTR 为了减少sds头占用的内存，对于44B之内的String新增EMBSTR编码
+
+#### set
+
+- 在什么时候进行object encoding？ 
+- 是么时候开始set开始使用plain sds？为什么？
+
+#### list
+
+三种encoding。
+
+
+#### hyperloglog
 
 用非常少的内存统计了scard，redis使用了12kB并且错误率只有0.81%。
 
@@ -792,11 +868,10 @@ feedAppendOnlyFile:
 - propagate
 - expire && evicted (propagateExpire)
 
-<<<<<<< HEAD
-
 ### PSYNC2
 
-TODO
+- PSYNC2依赖于rdb AUX field，那么不开启rdb下能用PSYNC2吗？ 只开启aof呢？
+- PSYNC2修改cascade replication机制，是怎么考虑slave write的？
 
 ### Lazy Free
 
