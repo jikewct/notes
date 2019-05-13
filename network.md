@@ -63,7 +63,18 @@ uint32_t ntohl(uint32_t net32bitvalue);
 
 * 地址转换
 
+命名含义：
+
+```
+n -- in_addr
+a -- 点分十进制字符串地址
+p -- in4/6_addr
+```
+
+
+```
 <arpa/inet.h>
+
 int inet_aton(const char *str, struct in_addr *addr); //返回bool
 in_addr_t inet_addr(const char *str); //如果无效返回INADDR_NONE,INADDR_NONE为255.255.255.255为广播地址（该函数被废弃）
 char *inet_ntoa(struct in_addr inaddr); //返回值为静态内存，该函数不可重入
@@ -73,7 +84,108 @@ const char *inet_ntop(int family, const void *addr, char *str, size_t len);//
 <netinet/in.h>
 #define INET_ADDRSTRLEN 16
 #define INET6_ADDRSTRLEN 46
+```
 
+
+* getaddrinfo
+
+network, service地址操作。
+
+```
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+
+int getaddrinfo(const char *node, const char *service,
+        const struct addrinfo *hints,
+        struct addrinfo **res);
+
+void freeaddrinfo(struct addrinfo *res);
+
+const char *gai_strerror(int errcode);
+
+struct addrinfo {
+    int              ai_flags;
+    int              ai_family;
+    int              ai_socktype;
+    int              ai_protocol;
+    socklen_t        ai_addrlen;
+    struct sockaddr *ai_addr;
+    char            *ai_canonname;
+    struct addrinfo *ai_next;
+};
+
+
+node：
+
+a) 点分十进制网络标记，ipv6标记；
+b) hostname（将执行DNS检索）
+
+如果flags指定了AI_NUMERICHOST，那么node必须是a)格式
+
+如果flags指定了AI_PASSIVE且node为null，则返回的结果可用于bind；如果node不是null，则AI_PASSIVE将被忽略
+
+如果没有指定AI_PASSIVE，那么返回结果适合可用于connect，sendto，sendmsg，如果node为null那么返回的是loopback地址；
+
+如果指定了AI_ADDRCONFIG，那么返回结果将不包含loopback地址。
+
+service:
+
+a) 数字端口
+b) 服务名services(6)
+    
+如果service为null，那么最终得到的端口是未初始化的。
+
+如果flags指定了AI_NUMERICSERV，那么service必须是a)格式，该标记用于禁止（DNS检索）
+
+
+node 与 service最多只能有一个为NULL。
+
+
+getaddrinfo 返回符合过滤条件的链式addrinfo，通过freeaddrinfo释放。getaddrinfo的排序
+根据RFC3484确定。
+
+```
+
+* getifaddrs
+
+枚举本机网卡和ip地址。
+
+```
+#include <sys/types.h>
+#include <ifaddrs.h>
+
+int getifaddrs(struct ifaddrs **ifap);
+
+void freeifaddrs(struct ifaddrs *ifa);
+
+struct ifaddrs {
+    struct ifaddrs  *ifa_next;    /* Next item in list */
+    char            *ifa_name;    /* Name of interface */
+    unsigned int     ifa_flags;   /* Flags from SIOCGIFFLAGS */
+    struct sockaddr *ifa_addr;    /* Address of interface */
+    struct sockaddr *ifa_netmask; /* Netmask of interface */
+    union {
+        struct sockaddr *ifu_broadaddr;
+        /* Broadcast address of interface */
+        struct sockaddr *ifu_dstaddr;
+        /* Point-to-point destination address */
+    } ifa_ifu;
+#define              ifa_broadaddr ifa_ifu.ifu_broadaddr
+#define              ifa_dstaddr   ifa_ifu.ifu_dstaddr
+    void            *ifa_data;    /* Address-specific data */
+};
+
+```
+
+* getsockname getpeername
+
+获取fd对应的四元组地址。
+
+```
+int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen); 
+```
 
 * 关于select poll epoll
 
@@ -97,7 +209,38 @@ memcached
 libcurl
 axel
 
+# 进程
+
+
+
+```
+execve
+---
+#include <unistd.h>
+
+int execve(const char *filename, char *const argv[],
+        char *const envp[]);
+
+execl
+---
+#include <unistd.h>
+
+extern char **environ;
+
+int execl(const char *path, const char *arg, ...);
+int execlp(const char *file, const char *arg, ...);
+int execle(const char *path, const char *arg,
+        ..., char * const envp[]);
+int execv(const char *path, char *const argv[]);
+int execvp(const char *file, char *const argv[]);
+int execvpe(const char *file, char *const argv[],
+        char *const envp[]);
+
+```
+
+
 * 抓包
+
 tcpdump
 =======
 
@@ -194,3 +337,24 @@ posix没有明确表达过以上行为，因此
 
 ---------------
 getaddrinfo
+
+
+# 代理
+
+## socks
+
+## http
+
+# port forwarding
+
+# ss
+
+# privoxy
+
+# nginx
+
+
+
+
+
+

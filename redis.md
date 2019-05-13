@@ -1,27 +1,53 @@
 # Redis
 
+## RDB
+
+### aux field
+
+
+### 参考材料
+
+https://github.com/sripathikrishnan/redis-rdb-tools/wiki/Redis-RDB-Dump-File-Format
+
 ## 协议
 
-redis支持两种协议RESP和inline，其中inline是支持telnet的协议，RESP是
+redis支持两种协议RESP2和inline，其中inline是支持telnet的协议，RESP2是
 常规的客户端协议。
 
-### RESP-request
+redis请求只能支持非嵌套的Multibulk，但是回复和客户端(hiredis)能支持
+嵌套的Multibulk。
+
+### RESP2
+
 
 ```
 *1\r\n$4\r\nping\r\n
 *3\r\n$3\r\nset\r\n$3foo\r\n$3bar\r\n
 *2\r\n$3\r\nget\r\n$3foo\r\n
-```
 
-### RESP-reply
 
-```
 For Simple Strings the first byte of the reply is "+"
 For Errors the first byte of the reply is "-"
 For Integers the first byte of the reply is ":"
 For Bulk Strings the first byte of the reply is "$"
 For Arrays the first byte of the reply is "*"
 ```
+
+### RESP3 
+
+redis6可能唯一支持的就是resp3协议.
+
+RESP2的最大问题就是命令的返回不是自描述的，比如hgetall返回的是个map，但是
+RESP2只能描述结果为array。
+
+作者的初心是redis6打破兼容性，原因是：
+- redis5承诺2年的支持
+- redis6计划在2020年发布，但是redis6大约1个月之后就会切换到resp3，给足时间缓冲
+- 增加无谓的工作量
+- 给大家一个整理行装，重新出发的理由
+- 客户端可以同时选择同时兼容RESP2和RESP3
+
+但是作者在开始纠结了。
 
 ## 事件循环
 
@@ -190,9 +216,19 @@ NULL，但是实际上不会对keyspace做修改。
 
 ### encodings
 
+#### sds
+
+- EMBSTR 为了减少sds头占用的内存，对于44B之内的String新增EMBSTR编码
+
+#### skiplist
+
+可以二分搜索的链表: level随机选择
+
 #### ziplist
 
+- memory efficient doubly linked list
 - 2B overhead, 但是修改ziplist引发realloc、copy、CPU cache miss
+- ziplist的entry可以支持encoding为int和raw
 
 #### linklist
 
@@ -221,7 +257,7 @@ typedef struct intset {
 - intset按照升序排列（tricy：造成升级的value总是在head或者tail）
 - `set-max-intset-entries`控制intset的element数量，默认512
 
-#### hashtable
+#### dict(aka hashtable)
 
 ```
 typedef struct dictType {
@@ -262,30 +298,55 @@ typedef struct dict {
 
 - hashtable overhead 为`96B+nelementx8`
 - dictAdd添加的key在ht中必须不存在，dictReplace是如果存在则replace
-- dictEntry接口：Dup, Compare, Destructor
+- dictEntry接口：Dup(如果指定则执行拷贝，目前没有dict采用自动dup), Compare, Destructor(除expiredb外，都自动keydtor；而只有db、lua_scripts、hash、keylist(blocked_keys,watched_keys,pubsub_channels)是自动valdtor)
 - hashtable对每一种哈希都有不同的配置
+
+dictAdd和dictReplace为什么要分开实现：
+
 
 ### types
 
 #### string
 
-- EMBSTR 为了减少sds头占用的内存，对于44B之内的String新增EMBSTR编码
+- set命令的特殊之处：如果key有之，那么不管什么类型，将直接覆盖
+
+#### hash
+
+- 编码可能为ziplist或者hashtable
+- ziplist和hashtable的转换标准：value(encoding前)超过hash-max-ziplist-value(64)或者entry数量超过hash-max-ziplist-entries(512)
+- ziplist存储的是raw string(decoded)
 
 #### set
 
 - 在什么时候进行object encoding？ 
 - 是么时候开始set开始使用plain sds？为什么？
+- set.hash结构为{robj(nulldup,autodtor):robj(nulldup,nulldtor)}，其中val使用nulldtor的原因是因为set只有key没有val。
+
+#### zset
+
+- 编码可能为ziplist或者skiplist;
+- zset.ziplist按照score排序
+- zset.skiplist综合使用了skiplist和hashtable存储
+- zset.skiplist使用skiplist索引score，使用hashtable索引member
+- 当zset成员长度小于64，元素数量小于128时可以使用ziplist编码
+- zunionstore zinterstore可以在zset和*set*之间做！
+- rangebylex只有在score相同的情况下才有意义，否则结果为unspecified！
+- rangebylex的逻辑是score相同lex不同，但是我们需要一种方法按照lex范围查询
+- zset.hashtable {robj:double}, zset.skiplist数据也是robj（hashtable查询时对不同的encoding先转换成RAW）
+- redis的`-inf +inf通过shared.` `- +`通过固定的shared.minstring shared.maxstring表示
+
+##### 关于range
+
+range都是inclusive，zero-based index，并且能用负数表示倒数。假如zset有n个element
+那么range的可用范围是`[-n, n)`。
 
 #### list
 
 三种encoding。
 
-
 #### hyperloglog
 
 用非常少的内存统计了scard，redis使用了12kB并且错误率只有0.81%。
-
-
 
 ### 相关issues
 
@@ -333,20 +394,7 @@ redis的性能不会因此下降。
 
 ## lua
 
-
-```
-eval <script> numkeys key1 key2 ... arg1 arg2 ...
-evalsha <sha> numkeys key1 key2 ... arg1 arg2 ...
-
-server.lua
-server.lua_client
-server.repl_scriptcache_fifo 
-server.lua_random_dirty = 0;
-server.lua_write_dirty = 0;
-server.lua_replicate_commands = server.lua_always_replicate_commands;
-server.lua_multi_emitted = 0;
-server.lua_repl = PROPAGATE_AOF|PROPAGATE_REPL;
-```
+lua特性用于实现redis事务(原子性)。
 
 ### 接口
 
@@ -359,6 +407,80 @@ redis.sha1hex
 redis.debug
 redis.error_reply
 redis.status_reply
+
+### 数据结构
+
+```
+
+server.lua
+server.lua_client
+server.repl_scriptcache_fifo 
+server.lua_random_dirty = 0;
+server.lua_write_dirty = 0;
+server.lua_replicate_commands = server.lua_always_replicate_commands;
+server.lua_multi_emitted = 0;
+server.lua_repl = PROPAGATE_AOF|PROPAGATE_REPL;
+```
+
+### 特性实现
+
+初始化:
+
+```
+lua_open
+luaLoadLib (base,table,string,math,debug,cjson,struct,cmsgpack,bit)
+luaRemoveUnsupportedFunctions //移除loadfile
+
+//加入函数
+lua_newtable
+lua_pushstring
+```
+
+script load
+
+```
+//拼接f_<sha1hex>函数
+luaL_loadbuffer(lua,funcdef,sdslen(funcdef),"@user_script");
+lua_pcall(lua,0,0,0)
+
+```
+
+eval
+
+```
+/* Push the pcall error handler function on the stack. */
+lua_getglobal(lua, "__redis__err__handler");//
+
+/* Try to lookup the Lua function */
+lua_getglobal(lua, funcname);
+if (lua_isnil(lua,-1)) {
+    lua_pop(lua,1); /* remove the nil from the stack */
+    /* Function not defined... let's define it if we have the
+     * body of the function. If this is an EVALSHA call we can just
+     * return an error. */
+    if (evalsha) {
+        lua_pop(lua,1); /* remove the error handler from the stack. */
+        addReply(c, shared.noscripterr);
+        return;
+    }
+    if (luaCreateFunction(c,lua,funcname,c->argv[1]) == REDIS_ERR) {
+        lua_pop(lua,1); /* remove the error handler from the stack. */
+        /* The error is sent to the client by luaCreateFunction()
+         * itself when it returns REDIS_ERR. */
+        return;
+    }
+    /* Now the following is guaranteed to return non nil */
+    lua_getglobal(lua, funcname);
+    redisAssert(!lua_isnil(lua,-1));
+}
+
+lua_sethook(lua,luaMaskCountHook,LUA_MASKCOUNT,100000);//设置超时
+err = lua_pcall(lua,0,1,-2);//执行命令
+
+```
+
+
+
 
 ### replication
 
@@ -667,6 +789,8 @@ GetBlockedClientHandle
 - pub/sub 会被复制到slave，但是不会持久化到aof中
 - 在lua脚本里头的pub/sub会不会复制到slave？
 
+pubsub只feed到slave，不feed到aof是通过dirty不变，但是FORCE_REPL实现的。
+
 client->pubsub_channels: {channel:NULL}
 server->pubsub_channels: {channel: [client]}
 
@@ -733,6 +857,13 @@ freeClientAsync:qa
 
 ## 复制
 
+为什么redis的slave能够syncWithMaster中使用同步io函数呢？
+
+这是因为syncWithMaster函数为read handler，没有读事件时不会进入该函数（在处理
+mainloop），读取事件时syncReadline一般也就直接读取到了，在收到不含newline的回复
+时，该函数将阻塞。
+
+
 ### 数据结构
 
 ```
@@ -765,81 +896,33 @@ slave.psync_initial_offset  # master offset when FULLRESYNC started
 slave.replpreamble
 ```
 
-### 事件流转
+### `put_slave_online_on_ack`
 
-a) POV REDIS_SLAVE:
+为什么diskless复制需要`put_slave_online_on_ack`状态？
 
-NONE
-CONNECT
-CONNECTING --> (RW, syncWithMaster)
-
-```
-
-RECEIVE_PONG --> (R, syncWithMaster) # 已经连接上了，不在需要写事件；握手阶段slave同步握手，无法处理其他请求
-SEND_AUTH
-RECEIVE_AUTH
-SEND_PORT
-RECEIVE_PORT
-SEND_CAPA
-RECEIVE_CAPA
-SEND_PSYNC
-RECEIVE_PSYNC -->  +FULLRESYNC <runid> <offset> --> ; +CONTINUE (R, readQueryFromClient; W, sendReplyToClient); -ERR --> (R, readSyncBulkPayload)
+这是因为slave不知道什么时候rdb流截止，如果master不等待ack直接发送增量数据，
+可能slave永远也发现不到rdb截止了。
 
 
-TRANSFER  # \n hearbeat; $EOF <runid>; $len <bulk>; 接受全量数据之后 --> ()
-CONNECTED
-```
+### diskless
+
+diskless优化master产生rdb的过程，该过程从生成rdb文件修改为直接将rdb数据流量写入
+slaves的socket，避免对master产生磁盘压力。
+
+由于将rdb数据流发送到slaves是子进程做的，如果部分slave发送失败，Redis父进程需要
+知道具体哪些slave发送失败。Redis采用pipe传递子进程的发送报告:
+
+1) 父进程创建pipe，整理slaves信息(fds,clientids,numfds)
+2) 子进程根据slaves信息，发送rdb流并上报发送结果
+3）父进程根据子进程上报的结果处置slaves
+
+### rio
 
 
-readSyncBulkPayload收尾工作
-
-signalFlushedDb # 通知watched keys已经变更
-emptyDb # 为了防止清空数据导致slave假死，emptyDb传入和一个发送"\n"的cb，用于保活M S链路
-rdbLoad # 为了防止rdbLoad导致slave假死，rdbLoad传入了一个复杂的cb（计算checksum，每2M更新server.unixtime, 向master发送\n, 处理少量ev(获取info)）
-server.master创建  # 创建master客户端
-stopAppendOnly,startAppendOnly # 每次FULLRESYNC都会触发bgaofrewrite.
-
-b) POV REDIS_MASTER
-
-WAIT_BGSAVE_START   # 需要FULLRESYNC时，标记slave为WAIT_BGSAVE_START；通常BGSAVE在BGSAVE中进行
-WAIT_BGSAVE_END     # 已经开启了BGSAVE，等待完成:disk,BGSAVE完成；diskless, 有子进程则WAIT_END
-SEND_BULK  --> (W,sendBulkToSlave)   # repl类型为DISK时，BGSAVE_END之后，状态转换为SEND_BULK
-ONLINE     --> (W,sendReplyToClient)  # diskless在子进程退出之后；disk sendBulkToSlave之后
-
-
-diskless 的进程间通信：
-<len> <slave[0].id> <slave[0].error> ...
-
-### 问题
-
-- slave握手阶段无法处理请求，那么sentinel发送的info是不是也无法处理，会不会进入+sdown状态？
-- redis复制协议能不能向前兼容
-- pipe W端写入时如果R端没有读取，能不能写入？如果能写入，但是W进程退出了，R进程还能读到么？
-- diskless传递会父进程的信息有啥用？
-- diskless啥时候删的W事件？
-- rdbsave的时候slave的W事件？
-- 为什么WAIT_BGSAVE_END状态中，feedReplication的数据不会丢失，并且不会发送给slave？
-- 为什么PSYNC成功，能够正确地把增量数据发送给slave
 
 ### 链式复制
 
 - 无法向middle PSYNC如果当前middle与master的链路未连接
-
-### 碎碎念
-
-- getLongFromObjectOrReply 工具函数，解析数字的时候也直接回复
-- 下游slaves随着上游master的改变，切换数据源
-- 为什么redis可以如此紧凑地实现业务逻辑???: 不处理oom（虽然不处理OOM，但是处理系统调用错误）
-- 不管同步还是异步，上来先把fd设置为nonblocking基本都是没错的
-- 由于Master可能需要很久才能把RDB文件准备好，因此slave发送了PSYNC后master发送RDB之前，master通过向slave发送newline保活。
-- redis所有的回复都存在了client->reply列表
-- +FULLRESYNC <master.runid> <master.master_repl_offset ? +1> （无backlog +1 )
-- 在slave中含有
-- 由于master收到PSYNC请求之后，如果配置是disless repl，并且delay比较长，那么master将发送\n保活
-- 由于master收到PSYNC请求之后，如果当前有BGSAVE正在进行但是没法客户端保存diff，那么需要等待BGSAVE下次schedule时间比较长，那么master将发送\n保活
-- 在rdbsave进行时，避免进行dictResize，避免对COW不友好
-- 如果psync;ping 通过pipeline进行，那么sync可能收到PONG回复 NONONO 收不到，只要客户端进入复制状态就不会在收到reply了（因为master WAIT_BGSAVE_START会进入假死保活状态，但是没有删除读写事件，因此sync命令会收到PONG）
-
 
 ### propagate
 
@@ -873,7 +956,23 @@ feedAppendOnlyFile:
 - PSYNC2依赖于rdb AUX field，那么不开启rdb下能用PSYNC2吗？ 只开启aof呢？
 - PSYNC2修改cascade replication机制，是怎么考虑slave write的？
 
-### Lazy Free
+### instrospect
+
+#### role命令
+
+a) master
+
+```
+1) "master"
+2) (integer) 1638
+3) 1) 1) "127.0.0.1"
+      2) "33321"
+      3) "15793584"
+```
+
+#### info replication
+
+## Lazy Free
 
 TODO
 
@@ -882,6 +981,28 @@ TODO
 ### MEMEORY
 
 ### Maxmemory & Oom
+
+命令执行前或者lua执行命令前，如果发现已经达到maxmemory limit直接返回错误，不执
+行该命令。
+
+freeMemoryIfNeeded函数执行必要的检查和抢救，如果抢救不回来了那就放弃。
+
+抢救方法：
+
+policy分为dict选择和key选择两部分,dict选择表示选择server.db,还是server.expire。
+key选择表示选择sample获取替死鬼的规则，lru表示选择idle最久的key、random表示随机
+选择key、ttl表示选择马上要超时的key，noeviction表示放弃抢救。默认volatile-lru。
+
+allkeys-lru
+allkeys-random
+volatile-lru
+volatile-random
+volatile-ttl
+noeviction
+
+NOTE：抢救过程一直持续到抢救成功或者已经牺牲了（可能循环很久）。抢救采取先污染
+后治理策略(zmalloc_memory_used > server.maxmemory)。
+
 
 ### LFU & LRU
 
@@ -912,6 +1033,132 @@ redis-3.2之后，如果redis绑定了所有的网卡并且没有密码保护，
 模式。在该模式下，redis只对来自loopback网卡的请求正常回复，而来自互联网的请求将
 被拒绝。
 
+### ACL
+
+redis-6版本新增ACL特性。
+
+```
+#   user <username> ... acl rules ...
+```
+
+用法：
+
+```
+"LOAD                              -- Reload users from the ACL file.",
+"LIST                              -- Show user details in config file format.",
+"USERS                             -- List all the registered usernames.",
+"SETUSER <username> [attribs ...]  -- Create or modify a user.",
+"GETUSER <username>                -- Get the user details.",
+"DELUSER <username>                -- Delete a user.",
+"CAT                               -- List available categories.",
+"CAT <category>                    -- List commands inside category.",
+"WHOAMI                            -- Return the current connection username.",
+```
+
+
+## 错误处理
+
+### 磁盘错误
+
+aofflush错误；
+
+```
+server.aof_current_size
+server.aof_last_write_status
+server.aof_last_write_errno
+```
+
+- EVERYSEC,后台有pending flush任务时，**postpone write**
+- short-write表示ENOSPC，如果ALWAYS则直接退出，如果EVERYSEC接着尝试
+- 如果从short-write恢复正常，打印恢复日志
+- fsync错误直接被忽略?
+
+aofrewrite错误：
+
+```
+server.aof_lastbgrewrite_status
+```
+- fullresync如果无法触发aofrewrite，slave将直接退出
+- rewrite的结果存储在aof_lastbgrewrite_status
+
+rdbsave错误:
+
+```
+server.lastbgsave_status
+```
+
+如果aofflush或者rdbsave错误并且role为master，那么写命令将失败`-MISCONF`
+
+## reply
+
+
+```
+int bufpos
+char buf[REDIS_REPLY_CHUNK_BYTES]
+
+list *reply //string[]，string长度接近REDIS_REPLY_CHUNK_BYTES
+unsigned long reply_bytes //reply总计malloc大小
+```
+
+redis reply包括静态buf和动态reply两部分，先填满buf再写入到reply，发送时先
+发送buf再发送reply。
+
+为了将reply拼合成REDIS_REPLY_CHUNK_BYTES大小的string，添加回复到reply中存在
+将小的string拷贝到大的string的过程。
+
+
+```
+// 添加RAW回复
+void addReply(redisClient *c, robj *obj); //添加object回复 copy
+void addReplySds(redisClient *c, sds s); //添加sds回复 move
+void addReplyString(redisClient *c, char *s, size_t len);//添加char*回复 copy
+
+//添加integer回复
+void addReplyLongLong(redisClient *c, long long ll);
+
+//添加status回复
+void addReplyErrorLength(redisClient *c, char *s, size_t len); //添加char* err copy
+void addReplyError(redisClient *c, char *err);
+void addReplyErrorFormat(redisClient *c, const char *fmt, ...);
+void addReplyStatusLength(redisClient *c, char *s, size_t len);
+void addReplyStatus(redisClient *c, char *status);
+void addReplyStatusFormat(redisClient *c, const char *fmt, ...);
+
+//添加MultiBulk回复（multibulk只比多个bulk多一个header）
+void *addDeferredMultiBulkLength(redisClient *c); //添加延迟mbheader
+void setDeferredMultiBulkLength(redisClient *c, void *node, long length); //mbheadr会和后一个node粘合在一起（所以reply中的string可能超过64k)
+void addReplyMultiBulkLen(redisClient *c, long length); //添加即时mbheader
+
+//添加Bulk回复
+void addReplyDouble(redisClient *c, double d);
+void addReplyBulk(redisClient *c, robj *obj);
+void addReplyBulkCBuffer(redisClient *c, void *p, size_t len);
+void addReplyBulkCString(redisClient *c, char *s);
+void addReplyBulkLongLong(redisClient *c, long long ll);
+
+```
+
+## 超时
+
+```
+server.repl_transfer_lastio : slave CONNECTED之前，只要收到任何来自master的消息就更新
+client.lastinteraction      : 客户端Write或者Read数据就更新（除master客户端，master客户端只有READ才算有更新）
+client.repl_ack_time        : slave向master发送newline心跳(fullresync load rdb)、PSYNC、REPLCONF ack/acksn、putSlaveOnline(disk or diskless)
+```
+
+### 主断从链
+
+- ONLINE的slave如果repl_ack_time超过repl_timeout，master关闭slave连接
+
+### 从断主链
+
+- 建立主从关系期间，如果server.repl_transfer_lastio超过repl_timeout则重新开始建立主从关系
+- 已经建立主从关系，如果master.lastinteraction超过repl_timeout断开连接
+
+### 普通客户端超时
+
+- 如果客户端空闲时间超过timeout，客户端将被断开
+
 ### 参考
 
 [Redis Security](https://redis.io/topics/security)
@@ -919,12 +1166,469 @@ redis-3.2之后，如果redis绑定了所有的网卡并且没有密码保护，
 [Redis Lua scripting: several security vulnerabilities fixed](http://antirez.com/news/119)
 [Clarifications on the Incapsula Redis security report](http://antirez.com/news/118)
 
+## keyspace notify
+
+- 通过pub/sub实现通知
+- 包括key-space、key-event两个维度的通知，分别针对key和cmd
+- 通过`config set notify-keyspace-events AKE`设置
+
+events列表:
+
+```
+DEL
+RENAME
+EXPIRE
+...
+EXPIRED
+EVICTED
+```
+
+关于redis中的keyspace notify的缺陷：
+https://github.com/antirez/redis/pull/5585
+
+## blocking operation
+
+
+```
+blpop, brpop, brpoplpush, bzpopmin, bzpopmax
+```
+
+```
+server {
+    db[]: db {
+        blocking_keys: {key => [client]}
+    }
+
+    blocked_clients
+    blocked_clients_by_type
+}
+
+client {
+    flags
+    btype
+    ...
+    bpop {
+        timeout
+        target
+        keys {key => keydata}
+    }
+}
+```
+
+- 对于block在多个key的client： `client->keys`和`server->blocking_keys`都有多个entry。
+- 客户端BLOCKED之后，只会读取query，但是不会处理querybuf
+- 客户端UNBLOCKED之后，在beforeSleep会处理积压的queybuf
+ 
+handleClientsBlockedOnKeys
+
+
+## multi/exec
+
+
+```
+server {
+    db {
+        watched_keys { key => [client] }
+    }
+}
+
+client {
+    watched_keys : [watchedKey { key, db} ]
+}
+```
+
+signalModifiedKey
+
+- 在watch了谁和谁被watch了两个维度进行了记录
+- watchedKey包括db和key两个要素
+- watch-set-multi-exec会导致exec失败, watch-multi-set-exec不会
+- watch之后expire,evict都不影响事务提交
+- watch不存在的key，别的客户端添加了这个key，那么提交失败
+
+## maxmemory
+
+slave设置的maxmeory没有作用，对于数据的最终解释权全部在master上！
+
+## swapdb
+
+swapdb命令涉及的方面很多：
+
+- block
+
+
+
+
+- trans
+
+- script
+
+- replication
+
+
+
+## 单元测试
+
+### tag系统
+
+redis单元测试中的tag用于标记类别，每一个测试案例可以打上多个tag。
+
+单元测试系统可以设置tag白名单和黑名单，用来选择过滤不用的测试案例集。
+
+用法:
+
+```
+./runtest --tags {allowtag -denytag}
+```
+
+实现:
+
+```
+$::denytags #tag黑名单：黑名单优先级最高，默认空
+$::allowtags #tag白名单: 白名单默认全部
+$::tags #用于记录当前执行代码所属的tag
+
+proc tags {tags code} #给code添加tag的函数
+
+```
+
+具体应用：
+
+rks对于某些命令暂时不支持，可以使用该特性过跳过不支持命令的测试案例。
+
+### 测试案例
+
+#### 复制
+
+replication:
+
+- 通过repl-disless-sync观察handshake状态
+- 观察block operation是否能正常复制 
+- 观察role，master-link-status进行复制状态监测;flushall, set k v命令传播
+- 观察在diskless yes&no的情况下，1主2从在write_load的情况下，最后的dbsize和debug digest相同
+
+replication-2:
+
+- 通过set/get命令观测min-slaves-to-write、min-slaves-max-lag在master，slave上的遵守情况
+- createComplexdata，然后比较主从之间的复制数据是否一致。
+
+replication-3:
+
+- MASTER and SLAVE consistency with expire; createComplexDataset useexpire
+- eval在master-slave间正确复制，并且最后通过dbsize，debugdigest，以及csvdump判断数据一致
+
+replication-4:
+
+- Test replication with parallel clients writing in differnet DBs，最后用dbsize,debug digest判断一致
+- 测试min-slaves-to-write、min-slaves-max-lag选项
+- debug digest验证长参数复制
+
+replication-psync:
+
+在$duration时间内，如果$reconnect, 则slave每2s断链一次，每次持续$delay时间。
+最后关闭写入压力，检查主从是否数据一致(每s一次，持续10s）
+
+## sentinel 测试
+
+./runtest-sentinel
+
+### 测试框架
+
+与redis的单元测试不同，sentinel的测试没有采用client-server架构，而是采用的比较
+简单的顺序模型。
+
+### 案例
+
+00-base: kill master --> 选择了新master --> slaves指向新master --> 旧master变成slave --> 设置qurum不可达到,kill master：不发生failover --> kill掉qurum个sentinel，kill master: 不发生failover -->  设置qurum与sentinel数量相同，killmaster: failover正常
+01-conf-update: 在一个sentile down时，sentinels能够failover --> sentinel up后，能够获取新的配置
+02-slaves-reconf: kill master，检查所有的slave向新的master复制（并且master-link-status是up） --> 在少了一个slave的情况下，kill master然后：检查failover和复制 --> 检查每个sentinel是否有完成failover  --> 重启slave，检查复制link
+03-runtime-reconf: 空？
+04-slave-selection: 空?
+05-manual: 测试sentinel failover命令正常：failover发生，新master复制关系搭建，旧master复制关系搭建
+06-ckquorum: 测试sentinel ckqorum命令正常检查到NOQUORUM 和 NOAUTH
+
+对于rks的测试而言，需要修改kill instance和restart instance的方法（因为rsync进程会清理不掉）
+对于rds的测试而言，应该不需要任何改变。
+
+## db
+
+redis支持多个db。
+
+```
+typedef struct redisDb {
+    dict *dict;                 /* The keyspace for this DB */
+    dict *expires;              /* Timeout of keys with a timeout set */
+    dict *blocking_keys;        /* Keys with clients waiting for data (BLPOP) */
+    dict *ready_keys;           /* Blocked keys that received a PUSH */
+    dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS */
+    int id;
+    long long avg_ttl;          /* Average TTL, just for stats */
+} redisDb;
+
+typedef struct redisClient {
+    redisDb *db;
+    ...
+}
+
+typedef struct redisServer {
+    redisDb *db;
+    int dbnum;                      /* Total number of configured DBs */
+    ...
+}
+
+#define REDIS_DEFAULT_DBNUM     16
+
+dbnum是一个不能动态修改的参数。
+普通客户端默认db为0，lua脚本的db与当前客户端相同。
+
+int selectDb(redisClient *c, int id);
+
+```
+
+涉及db的命令
+
+```
+select
+move
+```
+
+### UPRedis冷热分离支持多个db
+
+
+#### column family
+
+cf的主要思想就是share wal,don't share sst memtable。share wal可以保证原子性，
+unshare sst,memtable可以独立配置独立删除。
+
+只要任意一个cf flush，wal都会切换下一个。但是有mem对应的wal就不能被删除，因此
+在性能调优方面有一些有趣的细节和实现。
+
+问题：
+
+- 首先cf是需要初始化时候创建还是能动态创建，重启的时候能动态扩展么？
+- cf有一些资源是共享的，那么怎么着共享，会不会影响和redis.db对应？
+- 如果对应怎么实现？
+
+
+```
+创建cf
+db->CreateColumnFamily(ColumnFamilyOptions(), "new_cf", &cf);
+
+关闭cf
+delete cf;
+delete db;
+
+删除cf
+db->DropColumnFamily(handles[1]);
+
+列出cf：
+DB::ListColumnFamilies(const DBOptions& db_options, const std::string& name, std::vector<std::string>* column_families)
+
+
+https://github.com/facebook/rocksdb/blob/master/examples/column_families_example.cc
+```
+
+参考:https://github.com/facebook/rocksdb/wiki/Column-Families#backward-compatibility
+
+#### 设计思路
+
+- cf与db一一对应
+- 初始化创建? 打开？退出时关闭?
+- 每个命令的提交用rksCommit提交到`client->db`
+- redisDb数据结构添加cf，db的名称就是0,1,2,...dbnum
+- 所有调用rocksdb_put、rocksdb_get的命令都需要修改到putcf,getcf
+
+## debug
+
+redis提供了debug命令。
+
+### debug digest
+
+计算所有db的一个hash摘要，可以用于判断数据是否一致。
+
+- mix: digest = SHA1(digest xor SHA1(data))，需要保留顺序影响时使用
+- final = mix(db,mix(key,type,node,node,"!!expire!!");
+
+对于rks来说，我们可以直接对所有的meta和node进行没有迭代，然后直接sha1ctx。
+
+## defragment
+
+# redis cluster
+
+redis作者对于cluster是否production ready的评价：
+
+```
+Hello, your question would deserve a very long reply, but this TLDR 
+will be likely more useful to you: 
+
+1) Yes it is a stable product that can be used in production with success. 
+2) Sharding and failover are the best available with Redis AFAIK. 
+While there are similarities with Sentinel the fact that Redis Cluster 
+is centralized has advantages. 
+3) Quality of client libraries around is very low. This si a major 
+problem sometimes. 
+4) Resharding and rebalancing are slow, so if you want to dynamically 
+move things among nodes, it's not going to be very fast. It was 
+improved significantly with new multi-keys MIGRATE but still there is 
+work to do. 
+5) Tooling is very scarse: there are not monitoring and backup/restore 
+tools, so you have to invent your things. 
+6) redis-trib itself, the management utility, should be more robust. 
+
+So IMHO it's a system that has a lot of margin for improvements, but 
+that is already usable in different production scenarios. However I 
+would advise people using it at scale to understand how it works very 
+well: one of the advantage of Redis Cluster is that a single developer 
+without a huge experience in distributed systems can understand it all 
+in a small amount of time. 
+
+Cheers, 
+Salvatore 
+```
+
+总体上:
+
+- stable
+- 高可用特性好
+- 目前客户端质量比较差，有时候可能是个比较大的问题
+- resharding & reblancing比较慢？
+- 监控、备份、恢复工具缺乏
+
+当前作者也在关注cluster-proxy类似项目。
+
+一些比较感兴趣的点：
+
+- cluster failover是安全且没有数据丢失的，这是如何做到的？
+- resharding和rebalancing怎么做？resharding和multi-key MIGRATE?
+- lua脚本/通过hashtag路由到相同slot的key/在resharding过程中怎么做到原子性？
+- 热点key，大key，不均衡怎么办？
+
+cluster方案:
+
+优点:
+
+- 官方维护的代码，开源社区测试，更加有保障
+- 扩缩容流程更加平滑（不需要申请大量的资源）
+- 监控管理大有可为（可以做热点预警，动态迁移，横向扩容）
+- failover不丢数据
+
+缺点：
+
+- 没有upredis产品生态完善：比如说没有冷热分离和异地同步功能
+- 客户端不完善 (使用cluster-proxy方案)
+- 监控管理工具目前还不完善 (dbass开发监控管理/dbaas工具)
+
+直观上感觉，目前cluster还是不要推进为好！
+
+
+# Redis sentinel
+
+## 实现细节
+
+tilt:
+
+正常两次timer事件大概事件间隔为100ms，如果两次定时事件间隔超过2s或者时间
+回调，则sentinel进入到tilt模式。进入tilt模式后，持续30s只monitor不act。
+
+
+
+```
+
+sentinelState {
+    current_epoch
+    masters
+    tilt
+    tilt_start_time
+    running_scripts
+    scripts_queue
+}
+
+sentinelRedisInstance {
+    config_epoch
+    name 
+    runid
+
+    promoted_slave
+}
+```
+
+ASK/LOBBY
+
+```
+SENTINEL is-master-down-by-addr <ip> <port> <epoch> <*|runid>
+<down?> <*|leader runid> <leader epoch>
+```
+
+### 什么样的是一个bad slave？
+
+- sdown/odown/disconnected/hang(info超过5s或者30s未更新)/obselete(sentinel在repl-link down超过3分钟之后，才发现sdown)
+
+
+## 问题
+
+- 每个sentinel能监控多个master，那么sentinel对A、B、C三个master记录的不同状态存放在哪里？
+  当前sentinel的观点存放在master中，其他sentinel的观点存放在sentinel中
+
+
 # Redis-cli
 
 # Redis-benchmark
->>>>>>> 534743771bf533516ac1459e4b3e2afab45fa7a3
+
+redis-benchmark用法可以分为默认testsuite和自定义testsuite两种模式，如果arg之后
+还有参数，则使用自定义testsuite模式，否则使用默认testsuite模式。
+
+默认testsuite使用-t <case1>,<case2>...<casen> 指定，包括：
+ping, set, get, incr, lpush, lpop, sadd, spop, lrange, mset
+
+redis-benchmark 采用并没有采用异步api驱动，
+
+
+```
+client := (
+    context     //hiredis链接
+    obuf        //output buf
+    [randptr]   //pointers to __rand_int__ in command buf
+    randlen     //# pointers
+    randfree    //# unused pointers in randptr
+    written 
+    start
+    letency
+    pending     //# pending requests
+    prefix_pending // # pending prefix commands
+    prefix_len     // Size in bytes of pending prefix commands 
+)
+
+
+write:
+randomizeClientKey
+写完整个obuf
+安装readHandler
+
+read:
+先read
+redisGetReply解析buffer
+丢弃prefix commands
+统计latency
+clientDone:
+    判断是否任务完成
+    否则resetClient(keepalive):
+        删除read事件，安装write事件（但是obuf不会重新组装）
+
+
+综上：redis-benchmark使用了ae进行异步执行，但是并没有使用redis的异步api。
+
+```
+
+latency: 
+
+统计方法是每一个request都统计一个对应的latency，最后在进行sort，并给出report。
+
 
 # Hiredis
+
+## 协议相关
+
+Reader: 解包
+Format: 粘包
 
 ## 同步
 
@@ -936,6 +1640,20 @@ redis-3.2之后，如果redis绑定了所有的网卡并且没有密码保护，
 ## 异步
 
 总体思路就是hiredis实现读写ev，借用事件库驱动各连接的ev。
+一个请求对应一个cb注册到ctx的cb列表中，当读取到回复之后，按照顺序执行对应cb。
+
+## 非阻塞
+
+W:redisBufferWrite
+R:redisBufferRead
+
+## monitor和subscribe
+
+## Free与Disconnect
+
+- redisFree是针对内存/fd的操作，同步关闭链接直接redisFree；
+- redisAsyncFree清理cb，清理内存，ev（不能在cb中直接__Asyncfree）
+- redisAsyncDisconnect为了达到clean disconnect（后续不能发起请求，目前obuf要全部发送并且应答要全部收齐)
 
 ## FAQ
 
@@ -952,6 +1670,122 @@ JDE意味着"-ERR"且链路正常，链路可以继续使用。
 * **`REDIS_ERR_OTHER`**: 发生时upredis_open_conn为NULL，无法获取详细信息
 
 所以应该增加一个JCE相关err信息获取方法。
+
+# redis-migrate-tool
+
+## 用法
+
+模式(默认redis_migrate):
+
+
+```
+[-C redis_migrate|redis_check|redis_testinsert]
+```
+
+命令：
+
+```
+PING
+INFO
+SHUTDOWN
+```
+
+支持从RDB、AOF、SINGLE、TWEMPROXY到RDB、AOF、SINGLE、TWEMPROXY。
+ 
+支持通配符过滤。
+
+存量数据会校验冗余、增量数据不校验冗余。
+
+不支持EVAL/EVALSHA。
+
+
+## redis_migrate
+
+
+### 初始化
+
+- 读线程配比20%写线程80%
+- 按照unsafe和safe读，safe模式一个ip上的两个redis实例不同时读，避免同时触发bgsave
+- 读写线程都是按照srnodes均分的（因为读写线程的任务都来自于srnodes）
+- 读写线程通过srnode.socketpair通知对方
+
+
+### 事件循环
+
+- readThreadCron:
+
+检测执行shutdown
+执行redisSlaveReplCorn
+
+- writeThreadCron
+
+检测执行shutdown
+如果需要，重连（连接、auth、创建事件）
+
+- begin_replication
+
+读取通知
+转到rmtConnectRedisMaster
+
+- rmtConnectRedisMaster
+
+连接srnode
+转到rmtSyncRedisMaster
+
+- rmtSyncRedisMaster
+
+复制握手
+转到rmtReceiveRdb
+
+- rmtReceiveRdb
+
+收取rdb流
+如果rdb.type为RDBFILE，则写入到node-xx文件
+如果rdb.type为MEM，则数据存到srnode.rdb.data，通知相应写线程
+收取完毕之后，通知写线程notice_write_thread，转为增量数据传输rmtRedisSlaveReadQueryFromMaster
+
+- rmtRedisSlaveReadQueryFromMaster
+
+读取propagate流，数据存入srnode.cmd_data，通知写线程notice_write_thread
+
+- parse_prepare
+
+删除fdpair[1]读事件，创建socket:sk_event（将持续触发写事件）, 并创建相应的写事件redis_parse_rdb
+
+- redis_parse_rdb
+
+以一个较小的step循环解析rdb文件:redis_parse_rdb_file。
+
+redis_parse_rdb_file:
+    解析rdb文件，每解析到一个记录都: 
+        检查归属（SINGLE或者源数据为twem-random或者twem-others且源数据归属地正确）
+        检查是否符合过滤规则
+        调用rdb.handler:redis_key_value_send
+            路由选定目标节点
+            redis_generate_msg_with_key_value: 根据key类型，生成redis协议报文
+            prepare_send_msg: 检查并建写立线程与trnode的连接，将报文存入trnode.send_data，并创建写事件send_data_to_target,
+    验证checksum
+
+解析完成后，删除sk_event写事件。
+创建sockpairs[1]读事件parse_request
+通知写线程，notice_write_thread
+通知读线程从下一个srnode获取rdb文件
+
+- parse_request
+
+按照从srnode.rdb.data到srnode.cmd_data的优先顺序，将rdb或者cmd数据解析
+prepare_send_data:
+    检查命令是否支持，如果不支持则打印日志，并直接跳过
+    过滤消息
+    fragment、路由、prepare_send_msg
+
+- send_data_to_target
+
+发送trnode.send_data
+
+- recv_data_from_target
+
+读取target的回复，解析，如果解析失败日志记录失败（但是不会断链接）
 
 
 # Redis版本
@@ -1242,6 +2076,11 @@ Redis Stream参考kafka设计理念。
 
 
 ```
+5.0.1   2018/11/7 CRITICAL for Stream users
+5.0.0   2018/10/17 CRITICAL 
+5.0-rc6 2018/10/10 HIGH AOF bug, 不用slave名词，LOLWUT
+5.0-rc4 2018/8/3 HIGH localtime, redis-cli fix, active defrag 可以在redis5中使用
+5.0-rc3 2018/7/13 LOW
 5.0-rc2 2018/6/13 CRITICAL LUA security issues; SCAN bug; PSYNC2 bug; AOF Compatibility issue; Sentinel bug; Stream bugs
 5.0-rc1 2018/5/29 
 ```
@@ -1255,6 +2094,7 @@ Redis Stream参考kafka设计理念。
 3.0.x 2014/9/19 --(RC:6个月)--> 2015/4/1 --(GA:20个月)--> 2016/1/25
 3.2.x 2015/12/23 --(RC:5个月)--> 2016/5/7 --(GA:16个月)--> 2017/9/21
 4.0.x 2016/12/3 --(RC:7个月)--> 2017/7/14 --(GA:8个月)--> 2018/3/26
+5.0.x 2018/5/29 --(RC:5个月)--> 2018/10/17 --
 ```
 
 ## 总结
@@ -1285,8 +2125,8 @@ GEO功能对于扩展应用场景、PSYNC2功能对于降低failover时全量复
 - 消息读取: 读取stream的语义类似于`tail -f`，支持多个消费者读取消息。
 - 分组读取: 多客户端消费
 
-
 ## 命令
+
 
 ```
 XADD key ID field string [field string ...]
@@ -1310,6 +2150,23 @@ summary: Return new entries from a stream using a consumer group, or access the 
 XPENDING key group [start end count] [consumer]
 summary: Return information and entries from a stream conusmer group pending entries list, that are messages fetched but never acknowledged.
 
+XDEL key ID [ID ...]
+summary: Removes the specified entries from the stream. Returns the number of items actually deleted, that may be different from the number of IDs passed in case certain IDs do not exist.
+
+XGROUP [CREATE key groupname id-or-$] [SETID key id-or-$] [DESTROY key groupname] [DELCONSUMER key groupname consumername]
+summary: Create, destroy, and manage consumer groups.
+
+XINFO [CONSUMERS key groupname] [GROUPS key] [STREAM key] [HELP]
+summary: Get information on streams and consumer groups
+
+XPENDING key group [start end count] [consumer]
+summary: Return information and entries from a stream consumer group pending entries list, that are messages fetched but never acknowledged.
+
+XTRIM key MAXLEN [~] count
+summary: Trims the stream to (approximately if '~' is passed) a certain size
+
+XACK key group ID [ID ...]
+summary: Marks a pending message as correctly processed, effectively removing it from the pending entries list of the consumer group. Return value of the command isthe number of messages successfully acknowledged, that is, the IDs we were actually able to resolve in the PEL.
 ```
 
 ## 设计
@@ -1449,6 +2306,40 @@ XTRIM mystream MAXLEN 10
 与其他数据类型一样，Stream将被复制、持久化到AOF/RDB中，除此之外cg的状态也将被复制
 持久化。
 
+### 能否用stream替代kafka
+
+redis stream怎样进行横向扩展？
+> 通过客户端pre-sharding实现横向扩展
+
+
+kafka目前的劣势：
+
+- 比较重量，云闪付团队对API使用方式不熟悉，容易踩坑
+- 资源要求多：需要磁盘，CPU，内存
+- 分区数量不能太多（由于磁头数量少，分区太多细碎导致性能下降），同时又不能多个消费者消费同一个partition
+- 高可用方面不太友好？
+
+通常应用的配置：异步写、异步复制(ack=1)、mmap不刷盘
+
+优势：
+
+- TPS比较优秀
+- 能够存档历史数据，可以返回去重新消费
+
+
+# Redis Cluster
+
+- 主从结构，AP系统（异步复制，数据可能丢失，last failover win一致性）
+- 16k slot拆分，客户端redirect，支持manual resharding
+- gossip over clusterbus
+
+## 问题
+
+- 怎么组建cluster集群，分配slot，开始接受请求？
+- 怎么做failover，怎么保证manual failover过程中不会出现数据丢失?
+- 怎么做数据重新分配，如果出现了严重的数据倾斜怎么办？
+- cluster到底目前为什么没有在生产中使用？主要的障碍是什么？是否要推cluster方案？如何解决C客户端问题？
+- redis-cluster-proxy方案如果可行，是否可以使用cluster代替twemproxy方案实现更加平滑的扩容？基于cluster的异地方案(支持非对等的异地?）？
 
 # RedisLabs
 
@@ -1586,4 +2477,140 @@ s-->c: <cmd> <data>
 ### 小结
 
 
+# twemproxy
 
+## hash tag
+
+
+
+# bugs
+
+mset没有signal modified key
+sinter三大件中缺少
+
+
+# 业界动态
+
+周边工具:
+
+redis-faina
+redis-port
+
+可以用于培训的材料： https://yq.aliyun.com/articles/557508
+
+
+## 阿里
+
+### proxy
+
+https://yq.aliyun.com/articles/241237
+
+- client命令目前支持client list, setname, getname, kill四个sub command.
+- sunion, sdiff, sinter, sunionstore, sdiffstore, sinterstore, zinterstore, zunionstore 集群规格中，这几个命令不再要求所有key必须在同一个slot中，使用和主从版没区别。
+- info命令, info key user_key, info section, iinfo dbidx, riinfo
+- monitor命令, imonitor, rimonitor
+- scan命令, iscan
+
+以上这些功能，阿里云已经在2017-11-12之前完成。
+
+### redis
+
+阿里云的混合存储使用的nvme磁盘，后台控制冷热数据，并采用双写方案。
+
+#### 容灾
+
+2018年2月
+
+https://yq.aliyun.com/articles/403312
+
+#### 混合存储
+
+2018年4月
+
+- 90% cachemiss情况下，可以达到70%的性能
+- 存储引擎采用Fusion Engine
+- NVMe磁盘存储
+- bio线程增加SWAP/LOAD线程，异步处理冷热交换
+
+所有key保存在内存中，热点value保存在内存中，其他value保存在磁盘。
+SWAP线程将数据存储到rocksdb引擎。
+
+感觉上隐藏了比较重要的两个问题：
+
+- 大key问题
+- 性能随着时间的曲线问题
+
+#### 多线程
+
+
+#### 异地多活
+
+- AOF-BINLOG
+
+
+- CRDT
+
+https://yq.aliyun.com/articles/635628
+
+目前看来CRDT并不能解决所有的redis数据类型的最终一致性问题，只能解决
+部分数据结构，部分数据用法的最终一致性。
+
+https://yq.aliyun.com/articles/635629
+
+若命令集内所有命令间均具备交换律、结合律的，直接回放操作(op-based CRDT)
+若命令集对应的数据类型是set，使用基于时间戳做tag的OR-Set策略
+其它情况使用LWW(Last write wins)策略
+
+
+## sohu
+
+- sohutv cachecloud: https://github.com/sohutv/cachecloud
+- 可以给出监控，集成的灵感
+
+
+## netflix
+
+dynomite: 设计目标是为kv数据库附加高可用和容灾能力。
+
+目前看来应该是用户不多的。
+
+https://github.com/Netflix/dynomite
+
+# CRDT
+
+参考: https://github.com/orbitdb/ipfs-log
+阿里方案
+
+## counter
+
+Op-based counter
+
+G-Counter
+
+PN-Counter 两个G-counter
+
+## Register
+
+LWW Register: 带时间戳
+
+## Set
+
+Grow-Only Set (G-Set)
+
+2P-Set： 1）删除了之后就没法添加，删除的元素占用空间
+
+LWW-element-Set: 
+
+Observed-Remove Set (OR-Set):
+
+
+
+# 相关
+
+## key-value storage
+
+apple/foundationdb ACID，性能也不错
+
+## redis cluster
+
+joyieldInc/predixy A high performance and fully featured proxy for redis, support redis sentinel and redis cluster

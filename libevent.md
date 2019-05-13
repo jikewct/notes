@@ -1,4 +1,6 @@
-# libevent使用过程中的一些问题
+# libevent
+
+## 使用过程中的一些问题
 
 - event_add的参数timeout需要一直存在吗？
 - 再cb中event_del了一个active的event，那么active的event还会支持对应的cb不？
@@ -19,7 +21,7 @@ event_pending是一个比较奇怪的函数：
 对于EV_TIMEOUT表示尚未执行的ev
 
 
-- general idea
+## general idea
 
 ```
 #define EVLIST_TIMEOUT	0x01
@@ -90,11 +92,11 @@ persist同时，设置timeout会出现什么结果？
     pending: check if event added ?
     active: 内部函数，用于激活事件
 
-- evtimer vs timeout
+## evtimer vs timeout
 
 没有区别, 代码是一样的。
 
-- libevent signal 机制
+## libevent signal 机制
 
 sig1 \                / ev1_0->ev1_1->...ev1_m
 sig2  |   +------+   |  ev2_0->ev2_1->...ev2_m
@@ -141,7 +143,12 @@ eventbase_loop
 3. epoll收到可读（或者INTR）之后，激活信号量对应的事件列表
 4. 事件循环处理被激活事件
 
-- http
+## bufferevent
+
+在IO和RW之间的缓冲层，提供缓存容量高低水位控制。
+
+## evhttp
+
 客户端使用：
 evhttp_connection_new（创建链接）
 evhttp_request_new（创建请求）
@@ -169,6 +176,9 @@ close connection
 - bufferedevent & evbuffer & tag
 
 
+问题：
+
+- libevent怎么多线程处理req？
 
 
 

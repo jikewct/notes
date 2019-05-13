@@ -8,6 +8,31 @@
 
 # upredis-2.0
 
+## aof-binlog深入问题
+
+关键是怎么找到一个简单、可维护、易理解的模型！！使得运维使用aof-binlog这件事情变得简单！！
+
+> 为什么产生oplog是src_opid为-1，为什么不是next_opid，能不能改成next_opid?
+
+> 为什么`rdb+rdb.index`不能独立地作为`aof-binlog`状态数据恢复的源头? 也就是为什么不能直接把作为备份恢复的数据源？
+
+运维上提出以下问题：
+
+- 为什么不能直接拷贝rdb，然后再另外一个地方拉起实例？
+- 能不能通过rmt直接转移数据？
+
+> 为什么opapply没有更新dict?
+
+> 为什么有一些尚未使用的命令(oprestore，opdel...)，用来干嘛的?
+
+> 在rocksdb复制中遇到的问题，在aof-binlog如何避免的？
+
+> opinfo与cmd原子性是怎么做到的?
+
+> 关于持久化的理解？
+
+> 关于lua/expire/evict/multi&exec/aofload/rdbsave的特性支持
+
 ## 协议
 
 ```
@@ -32,6 +57,17 @@ replconf ack-opid <next_opid>
 "+REPL_VERSION <master_repl_version>  00000...000 [+FULLRESYNC...]|[+CONTINUE...]|[+AOFCONTINUE...]"
 ```
 
+## MULTI/EXEC
+
+MULTI/EXEC block只对应一个opinfo，只有一个opid，因此带来了以下注意点：
+
+- AOF-BINLOG中非MULTI的dbid存储在opinfo，由于multi执行超过一个命令，所以当中的select命令需要FORCE_AOF
+- multi/exec block内只有一个opinfo，block中的命令不能生成opinfo.
+
+## EXPIRE/EVICT
+
+
+## PUB/SUB
 
 
 ## replication
@@ -226,9 +262,35 @@ master，slave的offset如何保持一致，特别实在master需要向slave发�
 - 第二个是为什么aof-psync不可以保证？
 
 
+## 优化
+
+需要考虑的问题：
+
+- 重新搭建全量复制
+- 能不能再主库不开启aof的情况下，从库也能产生aof-binlog，从而减少影响？
+- 增加info oplog信息
+    - 添加server-id
+    - 添加opget信息
+    - 添加rdb.indx信息，aof-index信息
 
 
+```
+# Oplog
+current_opid:244292
+min_valid_opid:1
+opapply_source_count:1
+opapply_source_0:server_id=33302,applied_opid=243092
+opdel_source_count:0
+```
 
+目前的opid模型有点烧脑，简化成如下模型：
+
+- ropid (A+B+C...)
+- sopid (A,B,C每一个数据源头都有从1开始的opid)
+- ropid 在aof文件中是连续的
+- sopid 在每个数据源是连续的
+
+目前异地对于flushdb，flushall的处理？
 
 ## 测试
 
@@ -238,43 +300,77 @@ master，slave的offset如何保持一致，特别实在master需要向slave发�
 
 # upredis-api-c
 
+## 数据结构
 
-- README有点业余啊
-- upredis_log_set_handle? wtf!!
-- open_conn与 connect connect_with_auth connect_with_timeout??
-API范式有点混乱！！
-- free_reply_object?为什么不直接free_reply
-- set_timeout? connect超时控制了吗？
-- 长短链接的原理上的区别？
+```
+upredis {
+    auth_flag
 
-使用上的迷惑？
+    servers : [server : upredis_server {
+        entries
+        uprds
+        ip
+        port
+        tv
+        free_conns :[upredis_conn {
+            entries
+            uprds
+            svr
+            svr_old
+            rctx
+            rctx_old
+            cmd_count
+            cmd_count_old
+            type
+            version
+        }]
+        free_conns_cnt
+        used_conns
+        used_conns_cnt
+        persist_conns
+        persist_conns_cnt
+        status          //标志当前server是否可用
+        fail_cnt
+        last_fail_time
+    }]
 
-set_option的，key，value（类型）
+    rwlock
+    version
+    last_check_time
 
-为什么不使用sys/queue，而放入无关的tailq.h
+    options : upredis_option {
+        max_conns       //
+        conns_per_svr   //
+        redis_timeout   //读写超时
+        encrp_type      //
+        dbpm_info[1024] //
+    }
+}
+```
 
-另外为什么设计那么多的vcommand，command
+## 配置选项
 
-设计文档呢？
+```
+#define UPREDIS_OPT_MAX_CONN        1       /* default value is 10000 */
+#define UPREDIS_OPT_ENCRP_FLAG      2       /* UPREDIS_ENCRP_NO or UPREDIS_ENCRP_SHA256 */
+#define UPREDIS_OPT_DBPM_INFO       3       /* dbpm info */
+#define UPREDIS_OPT_REDIS_TIMEOUT   4       /* interact time out in ms */
+#define UPREDIS_OPT_CONN_PER_SVR    5       /* pre-allocate conns on per svr */
+```
 
-为什么拿到的不是直接的hiredis？
+## 密码&dbpm
 
-不依赖于commons-pool这样的组件的话，pool策略是什么样的呢？
 
-minIdel，maxTotal，block when exhausted, evictor？
 
-testOnBorrow, testOnIdle, testOnReturn
+## 隔离恢复
 
-reload操作涉及的问题
 
-好奇葩啊，居然提供了直接链接指定ip，port，timeout，passwd的接口
+## 测试
 
-为什么把svr_info和passwd与其他的option区分开来？不能统一到option中？
 
-reload操作的话，哪些东西能reload，哪些东西不能reload？
+## 注意事项
 
-Wlog什么的会不会影响性能，要不要perf或者gperf一把。
-
+- upredis-api-c不能通过auth命令管理密码，否则恢复proxy之后，重建的连接无法自动auth，从而造成auth过的长连接变成没有auth的连接。
 
 ------------------
 options:
@@ -960,6 +1056,296 @@ CLIENT ERR:
 - 将conn标记为err
 - 客户端/服务端链接被关闭
 
+## 配置
+
+```
+ctx := (
+    id
+    cf : conf = (
+        fname
+        fh
+        arg : [string]
+        parser
+        event
+        token
+        pool: [
+            conf_pool := (
+                name
+                listen : conf_listen
+                hash
+                hash_tags
+                distribution
+                ...
+                server : [
+                    conf_server := (
+                        pname
+                        name
+                        ...
+                        info
+                    )
+                ]
+            )
+        ]
+        valid
+        sound
+        ...
+    )
+    pool : [
+        server_pool := (
+            idx
+            ctx
+            ...
+            name
+            addrstr
+            ...
+            key_hash_type
+            key_hash
+            hash_tag
+            ...
+            server : [
+                server := (
+                    idx
+                    owner
+                    pname
+                    name
+                    ...
+                )
+            ]
+        )
+    ]
+    evb
+    stats
+)
+```
+
+主体思路：
+
+```
+conf_create //读取，解析配置文件到ctx->cf
+server_pool_init //调用conf_pool_each_transform，将ctx->cf->pool转换为ctx->pool
+```
+
+从以上分析可知，conf涉及两块：a)创建，b)转换
+
+a) 创建
+
+调用libyaml进行解析
+每解析到新conf_pool或者kv都调用conf_handler(cf,data) //data is current conf_pool
+
+
+```
+conf_handler:
+    如果是新conf_pool，则初始化该conf_pool
+    如果是kv:
+        根据k找到对应的command
+        然后调用cmd->set(cf,cmd,data) //data为当前conf_pool，其中set为conf_set_*
+
+conf_command := (
+    name    // 必须与配置文件的key相同
+    set     // 相应的设置函数, conf_set_*
+    offset  // 当前命令需要设置的数据在conf_pool结构中的偏移
+)
+
+```
+
+在conf_post_validate阶段，将适时给出默认值，并且检查pools中是否有重复listen和name。
+
+
+```
+listen: //必须设置
+distribution: ketama
+hash: fnv1a_64
+timeout: -1
+backlog: 512
+client_connection: 0
+redis: false
+tcpkeepalive: false
+redis_db: false
+preconnect: false
+auto_eject_hosts: false
+server_connections: 1
+server_retry_timeout: 30000 //ms
+server_failure_limit: 2
+redis_auth: ""
+servers: //必须设置，且不能有重复项
+```
+
+b) 转换
+
+## 哈希与分片
+
+
+### 哈希
+
+获取一致的32bit二进制，区别不大，包含：
+
+
+```
+    ACTION( HASH_ONE_AT_A_TIME, one_at_a_time ) \
+    ACTION( HASH_MD5,           md5           ) \
+    ACTION( HASH_CRC16,         crc16         ) \
+    ACTION( HASH_CRC32,         crc32         ) \
+    ACTION( HASH_CRC32A,        crc32a        ) \
+    ACTION( HASH_FNV1_64,       fnv1_64       ) \
+    ACTION( HASH_FNV1A_64,      fnv1a_64      ) \
+    ACTION( HASH_FNV1_32,       fnv1_32       ) \
+    ACTION( HASH_FNV1A_32,      fnv1a_32      ) \
+    ACTION( HASH_HSIEH,         hsieh         ) \
+    ACTION( HASH_MURMUR,        murmur        ) \
+    ACTION( HASH_JENKINS,       jenkins       ) \
+    ACTION( HASH_JAVA_HASHCODE, java_hashcode ) \
+```
+
+### 分片
+
+分片负责将一致的哈希均匀分配到各节点，包括：
+
+
+```
+    ACTION( DIST_KETAMA,        ketama        ) \
+    ACTION( DIST_MODULA,        modula        ) \
+    ACTION( DIST_RANDOM,        random        ) \
+    ACTION( DIST_JUMP,          jump          ) \
+```
+
+
+分片的总体思路：
+
+```
+server_pool_run //每次连续区需要更新时调用
+    ketama_update  //更新continuum
+```
+
+1) ketama
+
+ketama_update: 更新continuum
+
+更新的思路是总共生成nsvr*160个point，按照比重分配到每个svr上。每个svr分配point
+时，将{svr_index, ketama_hash}记录到continuum中，最后将整个continuum按照ketama_hash
+值排序。
+
+ketama_hash:(uint32_t)md5_signature([<servername>-<pointindex>)[pointperhashindex]
+
+因此最后得到的continuum有以下特性：
+
+- value为uint32_t，并且是按顺序排列的
+- 最后在continuum上svr_index是随机分布
+
+
+ketama_dispatch: 选择svr
+
+按照hash值二分查找ketamahash，相应的svr_index对应的svr即选中的svr。
+
+总结： ketamahash为uint32，因此如果hash为signed，那么最后导致最小的ketamahash对应的
+svr被选中的概率超过一半。因此如果采用ketama，那么不能使用signed hash。
+
+2) modula
+
+modula_update:
+
+按照svr的权重分配point，每个point对应的权重为1。
+
+modula_dispatch:
+
+hash % ncontinuum
+
+总结：modula的计算结果受到hash的符号影响。
+
+3) random
+
+random_update:
+
+按照svr（不分权重）分配point。
+
+random_dispatch:
+
+rand() % nsvr
+
+总结：完全与hash无关
+
+4) jump
+
+jump_update:
+
+与modula相同
+
+jump_dispatch:
+
+hash(uint32_t)会被强制转换为int，然后再参与分布
+
+总结：与hash的符号无关。
+
+### 问题
+
+> 如果server的组成不变，但是server的顺序变化，会不会导致分片规则变得混乱？
+
+不会的!因为conf_validata_server将server按照server_name排序，即使配置文件
+顺序变化，也不会造成最后pool->server的顺序变化。
+
+
+## auto eject & server dead
+
+### auto eject
+
+```
+server_pool := (
+    ...
+    server_retry_timeout
+    auto_eject_hosts
+    next_rebuild        //恢复时间，在next_rebuild之前不会尝试恢复
+    server := [
+        server := (
+            ...
+            next_retry  //隔离之后，尝试恢复的时间
+        )
+    ]
+    nlive_server
+    nserver_continuum   //total_weight + additional
+    ncontinuum // nserver_continuum * points_per_server
+    continuum
+)
+```
+
+隔离：
+
+```
+server_close    //关闭后端链接
+    server_failure
+        server_pool_run
+            xxxx_update
+```
+
+- 某svr的failure次数超过limit，则设置next_retry（标识被隔离），并更新continuum
+- 隔离的同时设置尝试恢复的时间next_rebuild
+
+恢复：
+
+```
+req_forward
+    server_pool_conn
+        server_pool_update
+            server_pool_run
+               xxxx_update 
+```
+
+- 每笔交易都看看是否需要恢复
+- 到了恢复时间(next_rebuild)之后，直接认为svr已经恢复
+
+
+总结: 
+
+1. 采用了交易触发的方式进行健康探测，每隔server_retry_timeout都会损失limit笔交易
+2. 如果后端有虚链接，后端还会hang，导致前端交易量下降
+3. server被隔离的标记now <= server.next_retry；需要恢复的标记是now>pool.next_rebuild 
+
+### server dead
+
+server dead只适用于非auto eject的情况。
+
+- 只要出现后端server failure，立即标记为dead
+- 只要后端链接连接上了，立即标记为!dead 
+- main loop中有一个before sleep定时任务，扫描是否有dead且需要恢复的svr，尝试重连
+
 ## 超时处理
 
 core_timeout 根据当前的rbtree计算event_wait等待的时间
@@ -1564,7 +1950,95 @@ req_recv_done
         redis_fragment_argx #根据分片规则，将submsgs分配好
     如果没有frag，则发送msg
     如果frag，则发送frag_msgq
-            
+
+
+### fragment异常处理
+
+关于fragment的错误处理，棘手之处在于fragment出错之后，msg与frag可能部分出错
+所以，需要回滚frag。
+
+发送、接收了一半的msg：
+
+
+读写事件：
+
+client_close:
+
+req_put rmsg，coq中done的直接discard，正在进行的swallow。
+
+server_close:
+
+清理req：标记siq和soq的所有req为done、error，如有必要，挂载前端写事件。
+
+core_close:
+
+断链，卸载读写事件，执行server_close|client_close。
+
+msg_send:
+
+粘包，send（最多128个mbuf），整理。
+
+如果send失败，则执行core_close。
+如果send eagain，则!send_ready，写事件执行完成。
+
+req_forward:
+
+路由，挂写事件。
+
+req_done:
+
+查看msg+frag是否已经都完成，如果都完成则标记为done,fdone。
+并且如果是fdone，还会执行post_coalesce。
+
+req_forward_error:
+
+标记当前msg为done,error，如果req_done则挂载写事件。
+
+rsp_make_error:
+  如果含有fragment，连带把frag_msg清理掉(req_put)
+  如果已有rsp，连带清理rsp
+
+rsp_send_next:
+
+等待msg+frag完成，这个msg才算完成，才给前端返回。完成的时候，如果发现frag
+或者msg有错误，那么返回的消息在rsp_make_error中被替换成msg_get_error，同
+时原来的msg+frag对应的peer也都被清除。
+
+req_error:
+
+msg+frag任何一个出现错误，那么都返回错误，并且最后msg+frag会被标记为ferror。
+
+
+问题：
+
+> fragment出错的话，现在的处理逻辑是否有问题？怎样正确处理？
+
+如果出现了fragmene
+
+> server给出-ERR回复，或者`proxy->redis`链接出现异常，server怎么处理
+
+submsg出错，twemproxy的处理逻辑比较subtle：
+
+收集出错的fragment回复需要经过:
+
+`pre_coalesce->req_done*-->post_coalesce(conn->err)-->rsp_next-->rsp_make_error`
+
+等一系列步骤。
+
+如果是proxy内部错，则最终的errno能反映到最后的回复中。
+
+如果是server错，则最终的errno被定义为EINVAL。
+
+> 是怎么做到fragment的msg有一个出错，最终返回的消息是这个错误的消息?
+
+因为只有req_done才会执行rsp_send_next，而rsp_make_error可以把frag+msg直接
+替换为error msg。
+
+> 为什么fragment出错，会导致前段断链？
+
+这是因为post_coalesce对没有peer的情况直接断链。
+
+
 ## quit    
 
 解析到quit命令，将msg->quit置为1；然后req_filter中将该消息丢弃；后续按照客户端断链处理
@@ -1572,8 +2046,6 @@ req_recv_done
 req_filter
    if (msg->quit)
        conn->eof = 1
-
-
 
 
 ## 读写分离
@@ -1595,6 +2067,9 @@ req_filter
 5. 断链重连
 - 与master处理类似，断链时直接close，丢失排队的所有msg；断链之后从alive_slaves中移除
 - 重连则从重新添加到alive_slaves
+
+## DBPM
+
 
 
 
@@ -1954,6 +2429,16 @@ merge操作类似于update操作，特殊的是merge的update操作可以通过�
 - [merge operator](https://github.com/facebook/rocksdb/wiki/Merge-Operator)
 - [merge operator implementation](https://github.com/facebook/rocksdb/wiki/Merge-Operator-Implementation)
 
+## 内存管理
+
+### rocksdb的内存管理
+
+open,close
+
+get,put,delete: get malloced, put,
+
+writebatch:
+
 ## WAL复制
 
 ### 思路
@@ -1970,6 +2455,41 @@ propagate的特殊考虑场景：
 - spop --> srem 1--1 不影响
 
 小结，只需要修改expire机制，可以继续使用redis原先的propagate机制
+
+## WAL复制2
+
+经过讨论之后，冷热分离只将全量复制从rdb替换到rocksdb复制。
+
+### 全量热备
+
+全量热备主要考虑粘连的问题：
+
+rdb全量point-in-time通过fork和cow保证，而rockdb的全量热备份通过sn保证。
+
+- 在server中保持一个rocksdb backup engine，一旦需要产生全量数据了就创建一次backup(incremental)
+
+关于backup的理解：
+
+backup是否包括wal，mainfest等文件？还是只有sst？
+如果包括wal，那么wal要切换？如果只有sst，那么要做一次minor+major？
+
+BackupOptions.flush_before_backup控制是否在backup时执行flush，如果不flush，则拷贝wal文件。
+Backup will be consistent with current state of the database regardless of flush_before_backup parameter.
+
+从实现上看 backup也就是把文件从db拷贝到备份目录（借助checkpoint），把sn保存起来
+从实现上看 restore也就是把文件从备份目录拷贝到db
+
+
+so 我想用的应该是checkpoint特性。
+
+但是我们真的需要checkpoint特性。
+
+Checkpoint是和backup类似的操作，硬链接sst + copy meta，然后可以打开了。
+
+那看样子我要的还不是checkpoint。
+
+如果我直接把当前db 发送过去，并且把sn告诉slave，那就可以不用fork，直接发送了。
+
 
 
 ### 评审的问题
@@ -2002,12 +2522,255 @@ lua提供原子性保证，在redis单线程模型下，并发请求被序列化
 
 ## 数据结构
 
+### 部分捞vs全部捞
+
+数据结构的实现分部分捞、全部捞两种，主要考虑set、zset、list、hash等聚合类型数据
+在未命中缓存的情况下，从rks中加载数据到rds的策略。
+
+a)全部捞
+
+未命中缓存则把该key涉及的所有数据捞取到rds中
+
+缺点：如果key涉及数据很多，那么全部捞则可能产生比较长的延迟。
+优点：对Redis代码侵入小，风险小；保证"(rds)有则全"，避免为了确定数据是否存在再次查询rks数据库。
+
+b) 部分捞
+
+未命中缓存在吧该key涉及的部分数据捞取到rds中
+
+缺点：逻辑控制复杂，有些命令因为没有“有则全”保证，需要再次查询rks。
+优点：不会带来潜在的hang问题。
+
+
+为了评估这两种方法的具体优劣点，对比了典型数据结构set在两种不同的策略下的性能。
+
+#### 性能调优
+
+对于LSMtree的性能调优通常是对读放大、写放大、空间放大的权衡。
+
+level compacetion写放大比较严重，对于一些write-heavy场景，write可能成为瓶颈。
+rocksdb提供了一种Universal的compaction算法，用于减少写放大，但可能引起写放大和
+空间放大。另外Universal compaction对于超过100GB的数据有限制。
+
+并发控制: 
+
+max_background_compactions  //默认1，为了充分利用cpu，建议设置到核心数量
+max_background_flushes  //默认1，通常1就可以了
+
+通用选项：
+
+filter_policy //默认10，1%的false positive
+block_cache cache // cache uncompressed blocks
+allow_os_buffer //cache compressed files
+max_open_files // -1 to keep all open
+table_cache_numshardbits
+block_size // 默认4kb
+
+Flushing选项:
+
+write_buffer_size //memtable大小
+max_write_buffer_number //imm+mm数量，如果超过则stall, stall在write > flush发生
+min_write_buffer_number_to_merge //flush时合并的memtable数量
+
+Level Style Compaction:
+
+level0_file_num_compaction_trigger 
+max_bytes_for_level_base,max_bytes_for_level_multiplier //建议为level的估计大小，默认10
+target_file_size_base,target_file_size_multiplier //建议size_base为bytes_base/10
+compression_per_level //控制每一层的compression
+num_levels //默认7，通常不需要改
+
+Universal Compaction:
+
+max_size_amplification_percent //默认200，也就是最多耗费3倍磁盘
+compression_size_percent //默认-1，所有数据都压缩
+
+
+
+小结：目前的参数已经没有明显的缺陷，需要通过别的方法提高性能。
+
+
+#### 性能测试
+
+为了公平对比两种策略对性能的影响，给出如下测试方法：
+
+- 针对set进行对比测试
+- 横坐标包括两个：loadfactor(数据总量/rds内存大小)和grain(粒度，单个set数据量)
+- 纵坐标包括两个：tps&delay
+- 测试命令包括所有的set命令
+- 公平起见，需要随机访问key（否则一直命中rks缓存）
+
+
+#### 测试结果
+
+```
+sadd
+srem
+smove
+sismember
+scard
+spop
+srandmember
+sinter
+sinterstore
+sunion
+sunionstore
+sdiff
+sdiffstore
+smembers
+sscan
+```
+
+
+loadfactor\grain   16k    128k   1M    8M   64M
+1/2
+2
+8
+32
+
+
+
+
+
+#### 结论
+
+希望部分捞vs全部捞的性能差别小，然后我就直接选择风险小的。
+
+
+### db
+
+```
+
+命令       支持计划  备注
+------------------------------------------------------------
+select         ×     //考虑引入cf支持
+move           ×     //多态命令
+rename         ×     //多态命令
+renamenx       ×     //多态命令
+keys           √     //多态命令，遍历
+scan           √     //多态命令，遍历
+dbsize         √     //增加命令 dbsize rks获取rks中数据总量
+save           √     //不改变实现，save表示save rds的数据
+bgsave         √     //不改变实现
+bgrewriteaof   √     //不改变实现
+flushdb        √     //flushdb将删除rks和rds中的数据
+flushall       √     //flushall将删除rks和rds中的数据
+```
+
+综上，需要考虑引入cf和多态支持move，rename，renamenx问题。
+
+
+### generic
+
+
+```
+命令       支持计划  备注
+------------------------------------------------------------
+del             √    //多态命令，考虑version方式实现
+exists          √
+randomkey       ×
+expire          √    //DbWithKeyTtl
+expireat        √    //DbWithKeyTtl
+pexpire         √    //DbWithKeyTtl
+pexpireat       √    //DbWithKeyTtl
+type            √
+sort            ×
+ttl             √    //DbWithKeyTtl
+pttl            √    //DbWithKeyTtl
+persist         √    //DbWithKeyTtl
+restore         ×
+migrate         ×
+dump            ×
+object          √   
+```
+
+综上，需要考虑删除的策略是否采用version方法。
+
+### lua
+
+```
+命令       支持计划  备注
+------------------------------------------------------------
+eval            √    //lua客户端与其他客户端支持的命令无差别
+evalsha         √ 
+script          √
+```
+
+综上，lua命令只收到支持命令列表的影响。
+
+### mgm
+
+```
+命令       支持计划  备注
+------------------------------------------------------------
+lastsave
+info
+monitor
+debug
+config
+slowlog
+time
+command
+latency
+```
+
+这些命令需要考虑如何在rks上体现。
+
+### zset
+
+类似于zset综合使用hashtable&skiplist编码格式，rksZSet使用了{(key,member):score}
+和{(key,score,member):(nil)}两个映射分别对member和score进行索引。
+
+zset中的score转换成int之后，按照be存储，则score的lex序就是digital序。
+
+zset操作包括:
+
+- 基本操作(zadd,zincrby,zrem,zrank,zrevrank,zscore,zcard)
+- rank范围操作(zrange,zrevrange,zremrangebyrank)
+- score范围操作(zcount,zrangebyscore,zrevrangebyscore,zremrangebyscore)
+- lex范围操作(zlexcount,zrangebylex,zrevrangebylex,zremrangebylex)
+- 集合操作(zunionstore,zinterstore)
+- range操作有withscore和[limit offset count]分页选项，可以配置exclusive
+- lex的特殊范围`- +`, 通过shared.minstring, shared.maxstring表示；score的特殊范围`-inf +inf`, 在double表示里面不特殊
+- rank range是zero-based indice
+- zset range -1的元素的revrank为0
+- zrevrange -1 -2同zrange 0 1
+
+当前的设计只能支持lex,score的范围操作，对于rank的范围操作需要再考虑一下。另外，
+如果set的大部分操作是范围操作，那么是不是说保证如果有zset则zset是完整的比较好!
+
+skiplist中采用了span标记来索引rank，那么在rks中怎么索引rank呢？
+目前nemo中没有索引rank，所以zrank, zrevrank的复杂度为O(N)
+
+revrange 2 3表示倒数第2与倒数第3
+
+- 由于rks中没有找到较好的rank索引方法，所以目前rank和revrank也是通过iter实现
+- zadd to zset.skiplist, element将编码; zscore 从 zset.skiplist中查询score将编码; zrank从zset.skiplist中查询rank
+
+```
+zrank key member -- 直接populate all: 平均从rocksdb中读取N/2，所有的才能rank；干脆直接读取所有
+zrevrank key member -- 直接populate all 
+
+ZLEXCOUNT key min max -- 用lexiterator？
+ZRANGEBYLEX key min max [LIMIT offset count] -- 用lex iter
+ZREVRANGEBYLEX key max min [LIMIT offset count] -- 用lex iter
+
+ZCOUNT key min max -- 用scoreiterator
+ZRANGEBYSCORE key min max [WITHSCORES] [LIMIT offset count] -- 用score iter
+ZREVRANGEBYSCORE key max min [WITHSCORES] [LIMIT offset count]  -- 用score iter
+
+ZREMRANGEBYLEX key min max -- 使用lexiter
+ZREMRANGEBYRANK key start stop -- 使用scoreiter
+ZREMRANGEBYSCORE key min max -- 使用scoreiter
+
+```
+
+
 ### set
 
 - set接受nil member
 - encoding是否为intset，不依赖于`key->encoding`，通过isObjectRepresentableAsLongLong判断
-- set的key一定是string.raw；value可能是string.raw或者string.int
-
+- set的key是sds；value可能是string.raw或者string.int
 
 ## TODO
 
@@ -2028,11 +2791,23 @@ rks使用的数据结构为sds
 
 复制记得不能和主线程share object！
 
-
 - 其他
 debug reload命令
 `keys *`输出结果不正确
 考虑`c->cf`来支持多个db
+
+注意maxmemory情况下，出现的evict不需要signal了?
+
+注意对argv[i]进行encode时，必须要意识到reset client时argv[i]将被decrRefCount
+
+NO！保持一个标记，标记当前聚合类型的数据是否完整。
+
+
+如果zset的iterator seek到了set的范围，会不会导致assert失败？
+
+rocksdb_iter_seek 怎么判断seek没有失败？
+
+测试在产生evict的情况下，各数据结构能正常运行
 
 ### 测试案例
 
@@ -2049,7 +2824,177 @@ debug reload命令
 
 hashtable能不能混用string.int和string.raw
 
+关于ttl，version，expire的回顾
+
+rds的db的key是啥时候incrRefCount的？
+
+
 
 ### checklist
 
 - 为了测试，变异参数变成了-g -O0，发布时记得改回来
+
+## 评审
+
+20180712
+
+关于复制
+
+- 冷热分离先期只支持复制，不支持异地; 
+- 关于异地支持的支持，等到实际需求异地的时候在实现异地方案；
+- 现在设计冷热分离的复制方案时可以暂时不用太考虑异地，可以按照王斯丙的方案先实现，后期再考虑异地问题
+
+
+综合以上思路，目前准备采用以下方案：
+
+- 采用rocksdb的全量数据备份`fork->backup->join`
+- 沿用propagate进行增量传输，但是不propagate evict（主从分别evict）
+- 沿用psync方案解决断链问题
+
+采用以上方案，可以做到: 1.工作量少；2.目的达到；3.如果上异地，直接把aof改成aof-binlog就好（合并aof-binlog代码）
+
+
+
+```
+- master打开模式(rks,rds)决定了master发送复制流的方式
+- 复制模式能够向前兼容，rks可以作为rds的slave；
+- 复制模式不能向后兼容，rds不能作为rks的slave（因为无法保证能从rks中获取rdb）
+
+-------------+--------------------------------+-------------------------------
+slave\master | rds                            | rks
+-------------+--------------------------------+-------------------------------
+         rds | -                              | slave不报告支持rks复制
+             |                                | master报错：不支持rds复制
+-------------+--------------------------------+-------------------------------
+         rks | slave告知master自身支持rks复制 | slave告知master自身支持rks复制
+             | master直接忽略，按照rds发送    | master直接按照rks格式发送
+-------------+--------------------------------+-------------------------------
+```
+
+
+
+TODO 设计encodebuf的缓存？
+
+
+Version&Del方案
+
+需要考虑的情况：
+
+- 超时或者删除一个聚合类型，必须O(1)
+- 已经超时的聚合类型，添加一个元素：避免把超时的元素复活
+- 已经删除的聚合类型，添加一个元素：避免把删除的元素复活
+
+以nemo-rocksdb替换uprocks的问题：
+
+- nemo-rocksdb ttl的时间精度为s，修改为ms？
+
+看情况改喽，目前决定还是改吧。
+
+- 去除meta_prefix_？为什么需要meta_prefix_? 
+
+因为不知道meta_prefix的话，无法判定key是meta还是node！并且无法从node反推到meta。
+
+可以不需要meta_prefix。
+
+- nemo-rocksdb 一个wb中必须是同一个key？否则会怎么样？iterate对此有预期？
+
+Write(withTtl): 统一设定到ttl s后超时
+
+WriteWithExpiredTime: 统一设定超时时间
+
+WriteWithKeyVersion: 版本增加
+
+wb不必是同一个key，所有ele会更新到比meta更新的版本
+目前也就是在删除数据时直接通过PutWithKeyVersion调用，延迟删除
+
+WriteWithOldKeyTTL: 保持ttl不变
+
+因为当前只在第一个put时查询version和ts，之后都以此为标准写入。
+因此wb必须是同一个key
+
+- delete采用put方法，但是这样必须考虑put和wb的提交顺序问题？
+
+
+最终如何考虑ttl和expire的问题？
+
+
+命令
+
+expire key seconds
+
+聚合类型的话，如果按照uprocks的方案，那么最后expire还是需要遍历所有元素修改ttl，
+这显然是不合理的。
+
+如果按照nemo-rocksdb方案，那么最后expire只需要修改meta的ttl时间。meta如果先于
+node超时，那么nodes就都被被动删除掉了。
+
+```
+nemo_db_.Put
+```
+
+pexpire
+
+pexpireat
+
+ttl
+
+pttl
+
+persist
+
+
+问题：
+
+- 如果meta.ts != node.ts，那么能否说明什么？已经超时了？还是咋的？所以说node.ts的意义是什么？
+- 为什么GetVersionAndTS如果是kv，那么直接返回的ts和ver都是0？
+
+
+## scan方案
+
+a) rds方案
+
+- 采用reverse binary iteration方法遍历hashtable (smart ass).
+- 对应非hashtable encoding的聚合类型，直接返回所有数据（不管count选项）
+- hscan,zscan返回field&value，set返回member，db返回key
+- 先获取count个数的candidate，然后在执行filter
+
+核心的思路是：rehash的过程中高位变化，因此采用rbi可以处理这种问题。
+
+cursor直观地可以采用bucket index从[0, BUCKSIZE)递增迭代，但由于rehash过程中
+bucket在从 xxxx -> ??xxxx 搬迁，造成bucket的迭代或出现重复。可以看出搬迁过程
+高位在变化，因此采用rbi可以覆盖到rehash之后，剩余没有scan的部分。
+
+
+rbi对于rehash的处理是：
+
+b) pika方案
+
+- 协议依然按照redis协议，
+- scan: 在server内部存储了cursor与metakey的对应状态，从而能得到cursor对应的状态。
+- sscan: 采用的居然是迭代器,不缓存状态,每次都从头迭代并skip的方案，感觉还不如不支持scan
+- hscan: 同sscan
+- zscan: 同sscan
+
+c) rks方案
+
+
+cursor = hash(startkey)
+
+stored_cursor := (
+    max_size
+    cur_size
+    cursor_map := { cursor : startkey }
+    cursor_list : [ cursor ]
+)
+
+cursor用hash(startkey)表示，这样的话类似的hashtable和zset也可以考虑采用类似的方法。
+
+即使有更换客户端重新scan也没有问题，多个客户端同时scan也没有问题。
+
+由于max_size很小，因此可以认为不存在冲突。
+
+
+
+
+
+

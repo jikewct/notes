@@ -1,3 +1,183 @@
+# nemo-rocksdb
+
+处理延迟删除和超时。
+
+## 概要设计
+
+
+```
+|meta key|   |meta value|version|timestamp|
+|node key|   |node value|version|timestamp|
+```
+
+在node，meta对应的value上添加version和ttl:
+
+超时：
+
+- timestamp超过当前时间则超时
+
+延迟删除：
+
+- meta.version > node.version说明node已经被删除 
+- 为了实现延迟删除，nemo-rocksdb需要知道node和meta的对应（无法抽象到key/value）
+- 如果在nemo中实现延迟删除，那么需要重复实现类似的逻辑多次，并且不太容易做到compaction删除已经被删除的nodes？
+
+用法：
+
+- 构造好writebatch之后，最后根据需要调用相应的Writexx方法
+
+get: 
+
+```
+if node:
+    if node.version < meta.version:
+        node already deleted
+    else
+        node exists
+else:
+    meta exists
+
+```
+
+put: 
+
+```
+if node:
+    node.version = meta.version
+    put node-key node|version|ts
+else:
+    meta.version = meta.version
+    put meta-key meta|version|ts
+
+```
+
+del: //删除node
+
+```
+if node:
+    del directly
+else:
+    //we never del meta?
+
+```
+
+unlink: //删除整个key
+
+```
+if node:
+    //we never unlink node
+else:
+    meta.version++
+    put meta|version|ttl
+```
+
+- meta version一定是最新的version，所以在write with ttl中可以直接采用meta的version
+
+问题：
+
+- unlink的用法啥样？传入的metaval是啥？
+- del能不能用来delete meta？
+- meta一旦出现，就不可能再删除了？如果要删除，则compaction filter中需要理解meta的组成和意义，并且给出相应的删除方法？
+
+
+
+如何把rks与db-nemo结合起来?
+
+## DBNemoImpl
+
+nemo-rocksdb负责encode/decode version和ttl，不负责encode/decode meta，node。
+
+总体设计思路：迭代、编码、更新wb、写入更新的wb。
+
+- writebatch的可以按照ttl、ts、version相同写入
+- version起始值为time(NULL)
+- 如果meta超时，则nodes也超时（注意不要造成复活）
+- merge的operand的version和ttl都是0：不超时，没有版本？
+
+```
+GetVersionAndTS         //获取nodekey或者metakey对应的metaval的version和ts（kv本身就是meta，因此
+AppendVersionAndTS      //添加version和ts：注意传入参数为ttl
+AppendVersionAndExpiredTime //添加version和expiredtime
+Write(WithTtl)          //
+WriteWithExpiredTime    //
+WriteWithKeyVersion     //wb中中每个node，meta都会被添加一个新的版本（time(NULL)或者version_old++)
+WriteWithOldKeyTTL      //保持和meta一样的version和超时，如果meta已经超时，则version++&不超时
+```
+
+## NemoIterator
+
+考虑了version和ttl的迭代器。
+
+node的version和ttl可能是上一个已经超时或者被延迟删除的，但是meta的version和
+ttl总是最新的。如果是meta，直接对比自己的ttl和version；如果是node，则和meta
+的ttl&version对比。
+
+
+```
+ExtractVersionAndTS
+ExtractUserKey
+GetVersionAndTS
+```
+
+## NemoCompactionFilter
+
+NemoCompactionFilter是必要的！否则无法清除掉过期数据造成空间浪费。
+
+支持用户传入usr_compaction_filter,user_comp_filter_from_factory，并且优先使用前者。
+过滤时先使用usr_compaction_filter过滤一遍。
+
+
+```
+ShouldDrop  //meta.card == 0，meta stale，node stale，node.ver < meta.ver，node没有对应的meta
+```
+
+## NemoCompactionFilterFactory
+
+持有user_comp_filter_factory_，并且使用该factory获取cf，用于初始化NemoCompactionFilter.
+
+## NemoMergeOperator
+
+千辛万苦就是为了让usr_merge_operator能够在没有version和ttl的干扰下执行merge。
+
+## DBNemoCheckpoint
+
+get不到checkpoint存在的意义？
+难道再尝试解决不flush但是可以获取当前的大小的问题？
+至少一个变化时link wal。
+无论如何对于upredis-rks的意义不大，因为我们通过上报seq获取checkpoint的seq。
+
+
+## 对接uprocks
+
+- 接口扩展问题
+- 确认每一个meta的第一个元素都是length/card之类的含义，否则逻辑有问题
+- 实现超时和del动作
+
+
+问题：
+
+为什么全局变量?
+g_compaction_filter_factory
+g_compaction_filter
+
+# nemo
+
+## scan方案
+
+主要思路是在内存中保存了一个cursor->start_key的映射。
+
+
+```
+//保存了{cursor:startkey}映射的lru缓存
+cursors_store_ := (
+    lsit_ := [ cursor ]
+    map_ := { cursor: startkey }
+    max_size_
+    cur_size_
+)
+```
+
+
 # pika
 
 线程模型依赖于pink
